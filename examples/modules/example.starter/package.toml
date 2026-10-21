@@ -1,0 +1,8 @@
+[package]
+id = "example.starter"
+name = "Starter Pack"
+version = "0.1.0"
+description = "Three small modules that show the format: a gather, a line scan, and a history."
+authors = ["The Destruct-O-Vision contributors"]
+license = "MIT"
+# modules = ["modules/*"] is the default.

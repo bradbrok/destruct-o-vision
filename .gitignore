@@ -1,0 +1,10 @@
+/target
+**/*.rs.bk
+.DS_Store
+/captures
+# User modules when running from the repository (see --modules).
+/modules
+
+# Design notes and decision records stay local until they're published.
+/docs
+/dist

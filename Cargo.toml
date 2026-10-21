@@ -1,0 +1,39 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/bradbrok/destruct-o-vision"
+publish = false
+
+[workspace.dependencies]
+dov-core = { path = "crates/dov-core" }
+dov-engine = { path = "crates/dov-engine" }
+dov-format = { path = "crates/dov-format" }
+dov-modules = { path = "crates/dov-modules" }
+dov-io = { path = "crates/dov-io" }
+
+wgpu = "30"
+winit = "0.30.13"
+egui = { version = "0.37", features = ["default_fonts"] }
+egui-wgpu = "0.37"
+egui-winit = "0.37"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.4"
+log = "0.4"
+env_logger = "0.11"
+png = "0.18"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+ron = "0.12"
+naga = { version = "30", features = ["wgsl-in"] }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

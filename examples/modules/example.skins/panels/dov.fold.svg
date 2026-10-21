@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="380" viewBox="0 0 120 380">
+  <!-- Full art restyling the built-in Folder as 1980s broadcast gear. -->
+  <defs>
+    <linearGradient id="metal" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#b9bcc0"/>
+      <stop offset="0.5" stop-color="#d9dcdf"/>
+      <stop offset="1" stop-color="#aeb1b5"/>
+    </linearGradient>
+    <pattern id="brush" width="4" height="2" patternUnits="userSpaceOnUse">
+      <rect width="4" height="1" fill="#ffffff" fill-opacity="0.08"/>
+    </pattern>
+  </defs>
+  <rect width="120" height="380" fill="url(#metal)"/>
+  <rect width="120" height="380" fill="url(#brush)"/>
+  <rect y="0" width="120" height="6" fill="#e8742a"/>
+  <rect y="6" width="120" height="2" fill="#1c1c1c"/>
+
+  <g font-family="Helvetica, Arial, sans-serif" fill="#141414" text-anchor="middle">
+    <text x="60" y="30" font-size="13" font-weight="bold" letter-spacing="2">FOLDER</text>
+    <text x="60" y="42" font-size="6.5" letter-spacing="1.5" fill="#55585c">DOV-FL1 WAVE SHAPER</text>
+  </g>
+
+  <!-- Recessed panels behind the knobs, and the legends. -->
+  <g fill="#22252a">
+    <rect x="22" y="58" width="76" height="76" rx="8"/>
+    <rect x="30" y="140" width="60" height="62" rx="8"/>
+  </g>
+  <g font-family="Helvetica, Arial, sans-serif" font-size="8" letter-spacing="1.3" text-anchor="middle">
+    <text x="60" y="128" fill="#e8742a">GAIN</text>
+    <text x="60" y="196" fill="#d9dcdf">BIAS</text>
+    <g fill="#141414">
+      <text x="35" y="273">GAIN CV</text>
+      <text x="83" y="273">BIAS CV</text>
+      <text x="34" y="358">IN</text>
+    </g>
+    <text x="86" y="358" fill="#e8742a">OUT</text>
+  </g>
+  <rect x="64" y="310" width="44" height="58" rx="4" fill="#1c1c1c"/>
+  <line x1="10" y1="224" x2="110" y2="224" stroke="#141414" stroke-width="0.8"/>
+  <line x1="10" y1="296" x2="110" y2="296" stroke="#141414" stroke-width="0.8"/>
+  <g fill="#7d8186">
+    <circle cx="8" cy="16" r="2.5"/>
+    <circle cx="112" cy="372" r="2.5"/>
+  </g>
+
+  <g id="components">
+    <circle id="param-gain" cx="60" cy="92" r="10"/>
+    <circle id="param-bias" cx="60" cy="166" r="10"/>
+    <circle id="cv-gain" cx="22" cy="250" r="8"/>
+    <circle id="cv-bias" cx="70" cy="250" r="8"/>
+    <circle id="in-sig" cx="34" cy="332" r="8"/>
+    <circle id="out-out" cx="86" cy="332" r="8"/>
+  </g>
+</svg>

@@ -1,0 +1,28 @@
+[package]
+name = "dov-app"
+description = "Destruct-O-Vision application: rack window + output window."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "destructovision"
+path = "src/main.rs"
+
+[dependencies]
+dov-core.workspace = true
+dov-engine.workspace = true
+dov-format.workspace = true
+dov-modules.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+egui-winit.workspace = true
+pollster.workspace = true
+log.workspace = true
+env_logger.workspace = true
+resvg = "0.48.1"

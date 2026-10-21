@@ -1,0 +1,33 @@
+Destruct-O-Vision @VERSION@
+A modular video synthesizer that emulates analog video.
+
+INSTALL
+Drag Destruct-O-Vision into Applications.
+
+FIRST LAUNCH
+This build isn't signed by Apple yet, so macOS blocks it the first time.
+Open it once, then go to System Settings > Privacy & Security, scroll down,
+and click "Open Anyway". On macOS 15 and later, right-click > Open no longer
+gets around this.
+
+GETTING STARTED
+File > Demo patch, Analog demo, Delay & key demo and 3D & text demo are good
+starting points. Right-click empty rack space to add modules, and drag from
+jack to jack to patch. Your patches, snapshots and modules live in
+Documents/Destruct-O-Vision.
+
+EXAMPLE MODULES
+Copy the folders in "Example Modules" into Documents/Destruct-O-Vision/modules
+(Modules > Open modules folder). They load right away:
+  example.starter   three effects (Line Tear, Bleed, Ghosts), with panel art
+                    for Line Tear
+  example.skins     panel art that restyles the built-in Folder and Mixer
+
+WRITE YOUR OWN
+Modules > New module... writes a starter module into the modules folder. Open
+it in any text editor: it reloads every time you save, and the Modules menu
+shows any errors. Panel art is an SVG named for the module, such as
+panels/dov.vco.svg.
+
+Free software under the GNU General Public License v3 or later (LICENSE.txt).
+Source, issues and new releases: https://github.com/bradbrok/destruct-o-vision

@@ -1,0 +1,18 @@
+[package]
+name = "dov-format"
+description = "The Destruct-O-Vision module format: headers, validation, and the WGSL glue modules compile against."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+# MIT, unlike the app: module authors, the registry and other hosts can use
+# this crate freely. It must not depend on the GPL-licensed crates.
+license = "MIT"
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+naga = { workspace = true }
+toml = "1.1.8"
+usvg = "0.48.1"
+roxmltree = "0.21"

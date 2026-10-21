@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="380" viewBox="0 0 120 380">
+  <!-- Full panel art for Line Tear (8 HP). Everything here is drawn except
+       the "components" group at the bottom, whose shapes tell the app where
+       each control goes: param-<id>, cv-<id> (the CV jack; its attenuverter
+       sits 26 units to its right), in-<id>, out-<id>. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1d1433"/>
+      <stop offset="1" stop-color="#090b16"/>
+    </linearGradient>
+  </defs>
+  <rect width="120" height="380" fill="url(#bg)"/>
+
+  <!-- Torn tape: slices pushed sideways, like the module does. -->
+  <g opacity="0.5">
+    <rect x="-8" y="48" width="128" height="3" fill="#ff2fb9"/>
+    <rect x="14" y="53" width="120" height="1.5" fill="#2fe6ff"/>
+    <rect x="-20" y="120" width="128" height="4" fill="#2fe6ff"/>
+    <rect x="6" y="126" width="128" height="1.5" fill="#ff2fb9"/>
+    <rect x="-12" y="236" width="128" height="2" fill="#ff2fb9"/>
+    <rect x="18" y="240" width="120" height="3" fill="#2fe6ff"/>
+    <rect x="-4" y="300" width="128" height="1.5" fill="#2fe6ff"/>
+  </g>
+
+  <!-- Title, split into red and blue like a mistracked tape. -->
+  <g font-family="Impact, 'Arial Black', sans-serif" font-size="21" text-anchor="middle">
+    <text x="62" y="32" fill="#2fe6ff">LINE TEAR</text>
+    <text x="58" y="32" fill="#ff2fb9">LINE TEAR</text>
+    <text x="60" y="32" fill="#f6f2ff">LINE TEAR</text>
+  </g>
+
+  <!-- Wells behind the knobs. -->
+  <g fill="#000" fill-opacity="0.35" stroke="#ff2fb9" stroke-opacity="0.55">
+    <circle cx="60" cy="82" r="23"/>
+    <circle cx="32" cy="152" r="20"/>
+    <circle cx="88" cy="152" r="20"/>
+    <circle cx="60" cy="216" r="20"/>
+  </g>
+
+  <!-- Legends. -->
+  <g font-family="Helvetica, Arial, sans-serif" font-size="8" letter-spacing="1.4" text-anchor="middle" fill="#cfc8ee">
+    <text x="60" y="117">AMOUNT</text>
+    <text x="32" y="184">BAND</text>
+    <text x="88" y="184">HOLD</text>
+    <text x="60" y="248">CHANCE</text>
+    <text x="35" y="297" font-size="7">AMT</text>
+    <text x="83" y="297" font-size="7">CHANCE</text>
+    <text x="34" y="364">IN</text>
+    <text x="86" y="364" fill="#2fe6ff">OUT</text>
+  </g>
+
+  <!-- Output well. -->
+  <rect x="64" y="314" width="44" height="58" rx="5" fill="#000" fill-opacity="0.5" stroke="#2fe6ff" stroke-opacity="0.6"/>
+
+  <!-- Screws. -->
+  <g fill="#3a3550">
+    <circle cx="8" cy="8" r="2.5"/>
+    <circle cx="112" cy="372" r="2.5"/>
+  </g>
+
+  <g id="components" fill="#ff00ff">
+    <circle id="param-amount" cx="60" cy="82" r="10"/>
+    <circle id="param-band" cx="32" cy="152" r="10"/>
+    <circle id="param-hold" cx="88" cy="152" r="10"/>
+    <circle id="param-chance" cx="60" cy="216" r="10"/>
+    <circle id="cv-amount" cx="22" cy="274" r="8"/>
+    <circle id="cv-chance" cx="70" cy="274" r="8"/>
+    <circle id="in-sig" cx="34" cy="336" r="8"/>
+    <circle id="out-out" cx="86" cy="336" r="8"/>
+  </g>
+</svg>

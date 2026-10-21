@@ -1,0 +1,7 @@
+[package]
+id = "example.skins"
+name = "Example Skins"
+version = "0.1.0"
+description = "Panel art for two built-in modules: a full broadcast-gear Folder, and a background for the Mixer."
+authors = ["The Destruct-O-Vision contributors"]
+license = "MIT"

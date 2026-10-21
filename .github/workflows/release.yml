@@ -1,0 +1,26 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+jobs:
+  macos:
+    runs-on: macos-15
+    # Only this job can write, to create the release. It runs no third-party
+    # actions (no build cache): releases are rare, and a cache action would
+    # run with this token.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Ad-hoc signed until a Developer ID certificate is set up; see
+      # scripts/package-macos.sh for the variables that sign and notarize.
+      - run: UNIVERSAL=1 scripts/package-macos.sh
+      - run: gh release create "$GITHUB_REF_NAME" --draft --generate-notes dist/*.dmg
+        env:
+          GH_TOKEN: ${{ github.token }}

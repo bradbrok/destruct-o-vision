@@ -1,0 +1,29 @@
+[package]
+name = "dov-engine"
+description = "Real-time engine thread: field clock, GPU passes, output presentation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+dov-core.workspace = true
+dov-format.workspace = true
+dov-modules.workspace = true
+dov-io.workspace = true
+wgpu.workspace = true
+bytemuck.workspace = true
+log.workspace = true
+png.workspace = true
+pollster.workspace = true
+ab_glyph = "0.2"
+epaint_default_fonts = "0.37"
+half = "2"
+
+[dev-dependencies]
+naga.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc.workspace = true

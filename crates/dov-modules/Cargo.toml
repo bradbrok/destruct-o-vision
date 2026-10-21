@@ -1,0 +1,13 @@
+[package]
+name = "dov-modules"
+description = "The built-in module library: descriptors, WGSL kernels and CPU behaviors."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+dov-core.workspace = true
+dov-format.workspace = true
