@@ -321,6 +321,140 @@ pub fn lab() -> Rack {
     rack
 }
 
+/// The showcase, and the patch the app opens with. Spinning 3D letters
+/// painted with an oscillator's color bars swirl through feedback over a
+/// contour-lit torus, with a banner keyed on top. Then all of it goes
+/// through the analog chain: encoded to composite, played through a VCR
+/// whose tracking drifts with an LFO, and shown by a TV on a CRT. The
+/// letters' own matte sets how many bars paint them, through a control jack.
+pub fn showcase() -> Rack {
+    let mut rack = Rack::default();
+    let mut add = |kind: &str, row: i32| {
+        let ty = dov_modules::find(kind).unwrap_or_else(|| panic!("missing module {kind}"));
+        let col = rack.row_end(row);
+        rack.add_module(ty, row, col)
+    };
+    // Picture.
+    let bars = add("dov.vco", 0);
+    let paint = add("dov.colorize", 0);
+    let letters = add("dov.text3d", 0);
+    let torus = add("dov.object", 0);
+    let torus_color = add("dov.colorize", 0);
+    // Space and time.
+    let ramps = add("dov.ramps", 1);
+    let mixer = add("dov.mixer", 1);
+    let drift = add("dov.lfo", 1);
+    let rainbow = add("dov.colorize", 1);
+    let feedback = add("dov.feedback", 1);
+    let over = add("dov.keyer", 1);
+    let banner = add("dov.text", 1);
+    let banner_color = add("dov.colorize", 1);
+    let titles = add("dov.keyer", 1);
+    // The analog chain.
+    let encoder = add("dov.encoder", 2);
+    let wobble = add("dov.lfo", 2);
+    let vcr = add("dov.vcr", 2);
+    let tv = add("dov.tv", 2);
+    let output = add("dov.output", 2);
+
+    // Broad, smooth color bands: composite video carries color at a much
+    // lower resolution than brightness, so fine stripes would come out of
+    // the TV grey.
+    set(&rack, bars, "range", 1.0);
+    set(&rack, bars, "multiple", 3.0);
+    set(&rack, bars, "detune", 0.35);
+    set_cv(&rack, bars, "multiple", 0.6);
+    set(&rack, paint, "hue", 0.6);
+    set(&rack, paint, "spread", 1.1);
+    set(&rack, paint, "sat", 1.7);
+    if let Some(m) = rack.module(letters) {
+        m.params.set_text("DOV");
+    }
+    set(&rack, letters, "size", 1.2);
+    set(&rack, letters, "rot_x", -14.0);
+    set(&rack, letters, "spin_y", 32.0);
+    set(&rack, letters, "extrude", 0.55);
+    set(&rack, letters, "bevel", 0.06);
+    set(&rack, torus, "shape", 2.0);
+    set(&rack, torus, "mode", 3.0);
+    set(&rack, torus, "size", 1.6);
+    set(&rack, torus, "spin_x", 11.0);
+    set(&rack, torus, "spin_y", -17.0);
+    set(&rack, torus, "dist", 5.0);
+    set(&rack, torus_color, "hue", 0.52);
+    set(&rack, torus_color, "spread", 0.5);
+    set(&rack, torus_color, "sat", 1.6);
+
+    set(&rack, mixer, "la", 0.55);
+    set(&rack, mixer, "lb", 0.92);
+    set(&rack, mixer, "lc", 0.35);
+    // The trails run through a colorizer whose hue sweeps once every 14 s.
+    set(&rack, drift, "rate", 0.07);
+    set(&rack, drift, "shape", 2.0);
+    set(&rack, rainbow, "spread", 2.4);
+    set(&rack, rainbow, "sat", 1.5);
+    set_cv(&rack, rainbow, "hue", 1.0);
+    set(&rack, feedback, "zoom", 0.975);
+    set(&rack, feedback, "rotate", 0.0);
+    set_cv(&rack, feedback, "rotate", 0.3);
+    set(&rack, feedback, "decay", 0.9);
+    if let Some(m) = rack.module(banner) {
+        m.params.set_text("DESTRUCT-O-VISION");
+    }
+    set(&rack, banner, "font", 2.0);
+    set(&rack, banner, "size", 0.085);
+    set(&rack, banner, "y", 0.87);
+    set(&rack, banner_color, "hue", 0.92);
+    set(&rack, banner_color, "spread", 0.15);
+    set(&rack, banner_color, "sat", 1.2);
+
+    set(&rack, wobble, "mode", 1.0);
+    set(&rack, wobble, "div", 2.0);
+    set(&rack, wobble, "shape", 5.0);
+    set(&rack, wobble, "amount", 0.5);
+    set(&rack, wobble, "offset", -0.25);
+    set(&rack, vcr, "tracking", 0.93);
+    set_cv(&rack, vcr, "tracking", 0.3);
+    set(&rack, vcr, "wow", 0.3);
+    set(&rack, vcr, "jitter", 0.35);
+    set(&rack, vcr, "dropouts", 0.3);
+    set(&rack, encoder, "chroma", 1.2);
+    set(&rack, tv, "saturation", 1.4);
+    set(&rack, output, "display", 1.0);
+    set(&rack, output, "glow", 0.45);
+    set(&rack, output, "curvature", 0.5);
+
+    for (from, out, to, inp) in [
+        (bars, "out", paint, "sig"),
+        (paint, "out", letters, "tex"),
+        (letters, "matte", bars, "multiple_cv"),
+        (letters, "out", mixer, "a"),
+        (feedback, "out", mixer, "b"),
+        (torus, "out", torus_color, "sig"),
+        (torus_color, "out", mixer, "c"),
+        (mixer, "out", rainbow, "sig"),
+        (drift, "out", rainbow, "hue_cv"),
+        (rainbow, "out", feedback, "sig"),
+        (ramps, "radial", feedback, "rotate_cv"),
+        (letters, "matte", over, "key"),
+        (letters, "out", over, "fg"),
+        (rainbow, "out", over, "bg"),
+        (banner, "out", banner_color, "sig"),
+        (banner, "out", titles, "key"),
+        (banner_color, "out", titles, "fg"),
+        (over, "out", titles, "bg"),
+        (titles, "out", encoder, "sig"),
+        (encoder, "out", vcr, "sig"),
+        (wobble, "out", vcr, "tracking_cv"),
+        (vcr, "out", tv, "sig"),
+        (tv, "out", output, "sig"),
+    ] {
+        rack.connect(addr(from, out), addr(to, inp), None);
+    }
+    rack.clear_history();
+    rack
+}
+
 /// An empty rack with just an Output module.
 pub fn empty() -> Rack {
     let mut rack = Rack::default();
@@ -386,6 +520,15 @@ mod tests {
         let schedule = dov_engine::graph::schedule(&rack.snapshot());
         assert!(schedule.warnings.is_empty(), "{:?}", schedule.warnings);
         assert_eq!(rack.snapshot().cables.len(), rack.cables.len());
+    }
+
+    #[test]
+    fn showcase_patch_is_fully_wired() {
+        let rack = showcase();
+        let schedule = dov_engine::graph::schedule(&rack.snapshot());
+        assert!(schedule.warnings.is_empty(), "{:?}", schedule.warnings);
+        assert_eq!(rack.snapshot().cables.len(), rack.cables.len());
+        assert!(schedule.output.is_some());
     }
 
     #[test]

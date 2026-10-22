@@ -40,13 +40,17 @@ const STATUS_TIME: Duration = Duration::from_secs(4);
 const USAGE: &str = "\
 usage: destructovision [options]
   --patch FILE           open a patch (default: the demo patch)
-  --demo NAME            start from a built-in patch: feedback | analog | time | lab | camera | empty,
+  --demo NAME            start from a built-in patch: showcase (the default) | feedback | analog |
+                         time | lab | camera | empty,
                          or tv[:stage,...], e.g. tv:vcr,cable (Encoder -> stages -> TV)
   --set TYPE:PARAM=VAL   set a param on every module of a type, e.g. dov.vcr:tracking=0.5
   --raster NAME          ntsc | pal | 720p | 1080p (default ntsc)
   --ui-load MS           simulated UI work per frame, for pacing tests
   --snapshot-after SECS  save the output and the UI to captures/ after SECS
   --quit-after SECS      log pacing stats and quit after SECS
+  --record DIR           render the output as numbered PNGs in DIR (every field, offline
+                         and smooth, as shown on the display), then quit
+  --record-seconds SECS  how much to record (default 10)
   --modules DIR          load user modules from DIR (default: ./modules, or
                          ~/Documents/Destruct-O-Vision/modules for the app bundle)
 
@@ -63,6 +67,8 @@ struct Options {
     snapshot_after: Option<f32>,
     quit_after: Option<f32>,
     modules: Option<PathBuf>,
+    record: Option<PathBuf>,
+    record_seconds: f32,
 }
 
 impl Options {
@@ -98,6 +104,8 @@ impl Options {
                 "--snapshot-after" => opts.snapshot_after = Some(secs()?),
                 "--quit-after" => opts.quit_after = Some(secs()?),
                 "--modules" => opts.modules = Some(PathBuf::from(value()?)),
+                "--record" => opts.record = Some(PathBuf::from(value()?)),
+                "--record-seconds" => opts.record_seconds = secs()?,
                 "-h" | "--help" => return Err(String::new()),
                 other => return Err(format!("unknown option '{other}'")),
             }
@@ -241,6 +249,8 @@ struct AppState {
     ui_captures: Vec<Capture>,
     /// The user's modules folder, watched for changes.
     modules: modules::UserModules,
+    /// A `--record` run has finished: quit.
+    recorded: bool,
 }
 
 impl AppState {
@@ -347,7 +357,8 @@ impl AppState {
                 }
                 Some("camera") => demo::camera(),
                 Some("empty") => demo::empty(),
-                _ => demo::demo(),
+                Some("feedback") => demo::demo(),
+                _ => demo::showcase(),
             },
             ui: AppUi {
                 load_ms: options.ui_load_ms,
@@ -363,6 +374,7 @@ impl AppState {
             ui_snapshot: None,
             ui_captures: Vec::new(),
             modules: user_modules,
+            recorded: false,
         };
         if let Some(path) = &options.patch {
             state.open(path);
@@ -384,6 +396,17 @@ impl AppState {
             state.engine.send(Command::DisplayRefresh(hz));
         }
         state.sync_engine();
+        if let Some(dir) = &options.record {
+            let seconds = if options.record_seconds > 0.0 {
+                options.record_seconds
+            } else {
+                10.0
+            };
+            state.engine.send(Command::Record {
+                dir: dir.clone(),
+                seconds: f64::from(seconds),
+            });
+        }
         Ok(state)
     }
 
@@ -503,7 +526,7 @@ impl AppState {
             self.snapshot_taken = true;
             self.apply(UiAction::Snapshot);
         }
-        if options.quit_after.is_some_and(|t| elapsed >= t) {
+        if self.recorded || options.quit_after.is_some_and(|t| elapsed >= t) {
             self.quit(event_loop);
         }
     }
@@ -624,6 +647,10 @@ impl AppState {
                 self.rack = demo::empty();
                 self.ui.rack_view.fit();
             }
+            UiAction::LoadShowcase => {
+                self.rack = demo::showcase();
+                self.ui.rack_view.fit();
+            }
             UiAction::LoadDemo => {
                 self.rack = demo::demo();
                 self.ui.rack_view.fit();
@@ -701,6 +728,10 @@ impl AppState {
 
         while let Some(event) = self.engine.try_event() {
             match event {
+                EngineEvent::Recorded(dir, frames) => {
+                    self.set_status(format!("Recorded {frames} frames to {}", dir.display()));
+                    self.recorded = true;
+                }
                 EngineEvent::Previews(Previews { output, probe }) => {
                     let renderer = &mut self.rack_window.renderer;
                     renderer.update_egui_texture_from_wgpu_texture(

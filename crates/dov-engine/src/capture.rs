@@ -77,30 +77,16 @@ impl Capture {
         match self.state.load(Ordering::Acquire) {
             PENDING => false,
             READY => {
-                let [w, h] = self.size;
-                let mut rgba = Vec::with_capacity((w * h * 4) as usize);
-                match self.buffer.slice(..).get_mapped_range() {
-                    Ok(view) => {
-                        for row in view.chunks_exact(self.padded_row as usize) {
-                            rgba.extend_from_slice(&row[..(w * 4) as usize]);
-                        }
+                match self.pixels() {
+                    Ok(rgba) => {
+                        let (path, [w, h]) = (self.path.clone(), self.size);
+                        std::thread::spawn(move || match write_png(&path, w, h, &rgba, false) {
+                            Ok(()) => log::info!("captured {}", path.display()),
+                            Err(err) => log::error!("capture {}: {err}", path.display()),
+                        });
                     }
-                    Err(err) => {
-                        log::error!("capture {}: {err}", self.path.display());
-                        return true;
-                    }
+                    Err(err) => log::error!("capture {}: {err}", self.path.display()),
                 }
-                self.buffer.unmap();
-                if self.swap_rb {
-                    for px in rgba.as_chunks_mut::<4>().0 {
-                        px.swap(0, 2);
-                    }
-                }
-                let path = self.path.clone();
-                std::thread::spawn(move || match write_png(&path, w, h, &rgba) {
-                    Ok(()) => log::info!("captured {}", path.display()),
-                    Err(err) => log::error!("capture {}: {err}", path.display()),
-                });
                 true
             }
             _ => {
@@ -109,9 +95,53 @@ impl Capture {
             }
         }
     }
+
+    /// Waits for the GPU and writes the PNG on this thread, quickly
+    /// compressed: for recordings, which go one frame at a time.
+    pub fn finish_now(&self, device: &wgpu::Device) -> Result<(), String> {
+        self.map();
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+        if self.state.load(Ordering::Acquire) != READY {
+            return Err("buffer mapping failed".into());
+        }
+        let rgba = self.pixels()?;
+        let [w, h] = self.size;
+        write_png(&self.path, w, h, &rgba, true).map_err(|e| e.to_string())
+    }
+
+    /// The mapped pixels as tightly packed RGBA.
+    fn pixels(&self) -> Result<Vec<u8>, String> {
+        let [w, h] = self.size;
+        let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+        let view = self
+            .buffer
+            .slice(..)
+            .get_mapped_range()
+            .map_err(|e| e.to_string())?;
+        for row in view.chunks_exact(self.padded_row as usize) {
+            rgba.extend_from_slice(&row[..(w * 4) as usize]);
+        }
+        drop(view);
+        self.buffer.unmap();
+        if self.swap_rb {
+            for px in rgba.as_chunks_mut::<4>().0 {
+                px.swap(0, 2);
+            }
+        }
+        Ok(rgba)
+    }
 }
 
-fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+fn write_png(
+    path: &Path,
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    fast: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -119,6 +149,9 @@ fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), Bo
     let mut encoder = png::Encoder::new(file, width, height);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
+    if fast {
+        encoder.set_compression(png::Compression::Fast);
+    }
     encoder.write_header()?.write_image_data(rgba)?;
     Ok(())
 }

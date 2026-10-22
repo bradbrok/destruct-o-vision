@@ -41,6 +41,7 @@ pub enum UiAction {
     Windowed,
     Snapshot,
     NewPatch,
+    LoadShowcase,
     LoadDemo,
     LoadCameraDemo,
     LoadAnalogDemo,
@@ -131,7 +132,11 @@ impl AppUi {
                     actions.push(UiAction::NewPatch);
                     ui.close();
                 }
-                if ui.button("Demo patch").clicked() {
+                if ui.button("Showcase").clicked() {
+                    actions.push(UiAction::LoadShowcase);
+                    ui.close();
+                }
+                if ui.button("Feedback demo").clicked() {
                     actions.push(UiAction::LoadDemo);
                     ui.close();
                 }

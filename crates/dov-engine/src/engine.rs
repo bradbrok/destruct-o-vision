@@ -107,6 +107,13 @@ struct Output {
     needs_configure: bool,
 }
 
+/// A recording in progress (see `Command::Record`).
+struct Recording {
+    dir: PathBuf,
+    total: u64,
+    done: u64,
+}
+
 pub(crate) struct Engine {
     device: wgpu::Device,
     queue: GpuQueue,
@@ -133,6 +140,7 @@ pub(crate) struct Engine {
     output: Option<Output>,
     capture_requests: Vec<PathBuf>,
     captures: Vec<Capture>,
+    recording: Option<Recording>,
 
     fields_rendered: u64,
     fields_dropped: u64,
@@ -189,6 +197,7 @@ impl Engine {
             output: None,
             capture_requests: Vec::new(),
             captures: Vec::new(),
+            recording: None,
             fields_rendered: 0,
             fields_dropped: 0,
             fields_repeated: 0,
@@ -209,6 +218,10 @@ impl Engine {
         raise_thread_priority();
         log::info!("engine running: {}", self.raster.name);
         while self.handle_commands() {
+            if self.recording.is_some() {
+                self.record_field();
+                continue;
+            }
             // Blocks until the display can take a frame when presenting with vsync.
             let frame = self.acquire_output();
             let now = Instant::now();
@@ -293,6 +306,35 @@ impl Engine {
         log::info!("engine stopped");
     }
 
+    /// Renders the next field of a recording and saves it, without
+    /// presenting: every field is rendered exactly once, so the frames make
+    /// a smooth video however long each takes.
+    fn record_field(&mut self) {
+        let Some(mut rec) = self.recording.take() else {
+            return;
+        };
+        let target = self.field.map_or(0, |f| f + 1);
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        self.encode_field(&mut encoder, target);
+        self.field = Some(target);
+        self.fields_rendered += 1;
+        let path = rec.dir.join(format!("frame-{:05}.png", rec.done));
+        let capture = self.encode_display_capture(&mut encoder, path);
+        self.queue.submit([encoder.finish()]);
+        self.runtime.after_submit();
+        if let Err(e) = capture.finish_now(&self.device) {
+            log::error!("recording frame {}: {e}", rec.done);
+        }
+        rec.done += 1;
+        if rec.done < rec.total {
+            self.recording = Some(rec);
+        } else {
+            log::info!("recorded {} frames to {}", rec.done, rec.dir.display());
+            let _ = self.events.send(EngineEvent::Recorded(rec.dir, rec.done));
+        }
+        self.publish_stats();
+    }
+
     /// Returns false on shutdown.
     fn handle_commands(&mut self) -> bool {
         while let Ok(command) = self.commands.try_recv() {
@@ -341,6 +383,15 @@ impl Engine {
                     self.bindings.probe = bind_probe(&self.device, &self.runtime, &self.blitter, probe);
                 }
                 Command::Capture(path) => self.capture_requests.push(path),
+                Command::Record { dir, seconds } => {
+                    let total = (seconds * self.raster.field_rate_hz()).round().max(1.0) as u64;
+                    log::info!("recording {total} fields to {}", dir.display());
+                    if let Err(e) = std::fs::create_dir_all(&dir) {
+                        log::error!("recording to {}: {e}", dir.display());
+                    } else {
+                        self.recording = Some(Recording { dir, total, done: 0 });
+                    }
+                }
                 Command::Shutdown => return false,
             }
         }

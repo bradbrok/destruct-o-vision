@@ -2,7 +2,19 @@
 
 Destruct-O-Vision is a modular video synthesizer that emulates analog video. You patch it like VCV Rack. Instead of applying a VHS look as a filter, it models the signal chain itself: oscillators run in raster time, video passes as composite through a VCR, and a CRT has to lock onto its sync.
 
-**Status: Phase 1 (patchable rack).** The app has a VCV-style rack: modules sit on rails, and you patch them with cables. It ships with 35 modules:
+<p align="center">
+  <img src="media/showcase.gif" alt="Spinning 3D letters in rainbow feedback trails, played through a VCR onto a CRT, with tracking noise tearing across the picture" width="640">
+</p>
+
+The showcase patch, which the app opens with, works like this:
+1. Spinning 3D letters are painted with an oscillator's color bars, over a contour-lit torus.
+2. They swirl through feedback whose colors cycle.
+3. Everything is encoded to composite video and played through a VCR, whose tracking drifts with an LFO.
+4. A TV decodes the signal and shows it on a CRT.
+
+The tearing, noise bars and soft color all come from the emulated signal, not from a filter. [Watch the full demo video](https://github.com/bradbrok/destruct-o-vision/releases/download/v0.1.1/destruct-o-vision-demo.mp4) (15 s, 60 fps).
+
+**Status: pre-alpha.** The app has a VCV-style rack: modules sit on rails, and you patch them with cables. It ships with 35 modules:
 - **Sources:** VCO, Ramps, Shape, Noise, a live Camera (macOS), Text, 3D Text, and 3D Object
 - **Processing:** Mixer, VCA, Folder, Keyer, Chroma Key, a line-scan Filter, Blur, Edge, Posterize
 - **Color:** Colorize, RGB Combine/Split
@@ -21,8 +33,11 @@ Monitor, Output, Camera and TV show live pictures right in their panels. The Out
 
 The TV has to lock onto the signal, using a sync separator, a line oscillator with AFC and a field oscillator with V hold. Rolling, tearing, flagging and lost color come from the signal itself. For example, push an oscillator into the sync with Inject and the picture falls apart.
 
-Built-in demo patches:
-- `--demo feedback` (the default)
+![The showcase patch in the rack: 19 modules and 23 cables over three rows, with live pictures on the TV and Output panels](media/rack.jpg)
+
+Built-in demo patches (also on the File menu):
+- `--demo showcase` (the default)
+- `--demo feedback`
 - `--demo analog`
 - `--demo time` (delays and chroma key)
 - `--demo lab` (3D text over swirling feedback, with video driving a control jack)

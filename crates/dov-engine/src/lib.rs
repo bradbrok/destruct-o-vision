@@ -44,6 +44,13 @@ pub enum Command {
     Probe(Option<(ModuleId, usize)>),
     /// Save the next woven frame (at storage resolution) as a PNG.
     Capture(PathBuf),
+    /// Render `seconds` of fields as fast as possible, one after another
+    /// whatever the clock says, saving each as it appears on the display to
+    /// `dir/frame-NNNNN.png`. For demo videos: nothing is dropped or repeated.
+    Record {
+        dir: PathBuf,
+        seconds: f64,
+    },
     Shutdown,
 }
 
@@ -53,6 +60,8 @@ pub enum EngineEvent {
     Previews(Previews),
     /// The set of in-panel screens changed; register these, drop the rest.
     Screens(Vec<(ModuleId, Preview)>),
+    /// A recording finished: this many frames were saved to the folder.
+    Recorded(PathBuf, u64),
 }
 
 /// A texture the UI can display, updated by the engine every field.
