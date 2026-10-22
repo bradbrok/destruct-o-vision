@@ -11,10 +11,15 @@ and click "Open Anyway". On macOS 15 and later, right-click > Open no longer
 gets around this.
 
 GETTING STARTED
-File > Demo patch, Analog demo, Delay & key demo and 3D & text demo are good
-starting points. Right-click empty rack space to add modules, and drag from
-jack to jack to patch. Your patches, snapshots and modules live in
-Documents/Destruct-O-Vision.
+File > Demo patch, Analog demo, Delay & key demo, 3D & text demo and Audio
+demo are good starting points. Right-click empty rack space to add modules,
+and drag from jack to jack to patch. Your patches, snapshots and modules live
+in Documents/Destruct-O-Vision.
+
+SOUND AND MIDI
+Audio In asks for microphone access the first time; click its top row to
+pick any input and channel. MIDI Notes and MIDI CC listen to every MIDI
+device, including ones plugged in later.
 
 EXAMPLE MODULES
 Copy the folders in "Example Modules" into Documents/Destruct-O-Vision/modules

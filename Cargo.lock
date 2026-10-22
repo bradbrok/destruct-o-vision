@@ -712,7 +712,7 @@ dependencies = [
 
 [[package]]
 name = "dov-app"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "dov-core",
  "dov-engine",
@@ -732,7 +732,7 @@ dependencies = [
 
 [[package]]
 name = "dov-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "ron",
  "serde",
@@ -740,7 +740,7 @@ dependencies = [
 
 [[package]]
 name = "dov-engine"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "ab_glyph",
  "bytemuck",
@@ -760,7 +760,7 @@ dependencies = [
 
 [[package]]
 name = "dov-format"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "naga",
  "roxmltree 0.21.1",
@@ -771,7 +771,7 @@ dependencies = [
 
 [[package]]
 name = "dov-io"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "block2 0.6.2",
  "cpal",
@@ -790,7 +790,7 @@ dependencies = [
 
 [[package]]
 name = "dov-modules"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "dov-core",
  "dov-format",
