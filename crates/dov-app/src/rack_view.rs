@@ -4,6 +4,8 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, mpsc};
+use std::time::Duration;
 
 use dov_core::{Category, ModuleDesc, ModuleId, ParamBank, ParamKind, Patch, PortAddr, PortKind};
 use dov_modules::{ModuleType, Origin};
@@ -76,9 +78,8 @@ pub struct RackView {
     pub hovered_module: Option<ModuleId>,
     /// Scene-to-screen transform from the last frame.
     to_global: TSTransform,
-    /// Panel art rasterized for the current zoom, one texture per file:
-    /// (file, generation, width in pixels) to texture.
-    art_textures: HashMap<(PathBuf, u64, u32), egui::TextureHandle>,
+    /// Panel art, rasterized off the UI thread.
+    art: ArtCache,
 }
 
 impl Default for RackView {
@@ -91,46 +92,12 @@ impl Default for RackView {
             menu_at: None,
             hovered_module: None,
             to_global: TSTransform::IDENTITY,
-            art_textures: HashMap::new(),
+            art: ArtCache::default(),
         }
     }
 }
 
 impl RackView {
-    /// The texture of `art` drawn at `size` (panel units) for the current
-    /// zoom. Rasterized in 1.5x steps of scale, so zooming doesn't redraw it
-    /// every frame, and cached.
-    fn art_texture(&mut self, ctx: &egui::Context, art: &LoadedArt, size: Vec2) -> egui::TextureId {
-        let pixels = ctx.pixels_per_point() * self.to_global.scaling;
-        let scale = 1.5f32.powf(pixels.max(0.25).log(1.5).ceil()).min(4.0);
-        let (w, h) = (
-            (size.x * scale).round().clamp(1.0, 4096.0) as u32,
-            (size.y * scale).round().clamp(1.0, 4096.0) as u32,
-        );
-        // One texture per art file: drop its other zoom levels and versions.
-        let key = (art.path.clone(), art.generation, w);
-        if !self.art_textures.contains_key(&key) {
-            self.art_textures.retain(|k, _| k.0 != art.path);
-        }
-        self.art_textures
-            .entry(key)
-            .or_insert_with(|| {
-                let mut pixmap = resvg::tiny_skia::Pixmap::new(w, h).expect("nonzero size");
-                let s = art.art.tree.size();
-                let fit =
-                    resvg::tiny_skia::Transform::from_scale(w as f32 / s.width(), h as f32 / s.height());
-                resvg::render(&art.art.tree, fit, &mut pixmap.as_mut());
-                let image =
-                    egui::ColorImage::from_rgba_premultiplied([w as usize, h as usize], pixmap.data());
-                ctx.load_texture(
-                    format!("panel art {}", art.path.display()),
-                    image,
-                    egui::TextureOptions::LINEAR,
-                )
-            })
-            .id()
-    }
-
     /// Zoom to fit the whole rack on the next frame.
     pub fn fit(&mut self) {
         self.scene_rect = Rect::ZERO;
@@ -269,10 +236,11 @@ impl RackView {
             });
 
             let lifted = self.module_drag.as_ref().is_some_and(|d| d.id == id);
+            let pixels = ui.ctx().pixels_per_point() * self.to_global.scaling;
             let art = layout
                 .art
                 .as_ref()
-                .map(|a| self.art_texture(ui.ctx(), a, rect.size()));
+                .and_then(|a| self.art.texture(ui.ctx(), a, rect.size(), pixels));
             panel::draw_panel(
                 &painter,
                 rect,
@@ -360,6 +328,7 @@ impl RackView {
                 }
             }
         }
+        self.art.end_frame();
         probe_target
     }
 
@@ -845,6 +814,123 @@ pub fn add_module_menu(ui: &mut Ui) -> Option<&'static ModuleType> {
         });
     }
     chosen
+}
+
+/// Rasterized panel art. Rendering an SVG can take a while, so it happens on
+/// background threads (a couple at a time) and the panel is drawn plain
+/// until its art arrives; when the zoom changes, the old texture stays up
+/// until the new one is ready. Textures are kept within a memory budget,
+/// dropping the least recently drawn.
+#[derive(Default)]
+struct ArtCache {
+    entries: HashMap<(PathBuf, u64), ArtEntry>,
+    frame: u64,
+}
+
+#[derive(Default)]
+struct ArtEntry {
+    /// Width in pixels, and the texture.
+    texture: Option<(u32, egui::TextureHandle)>,
+    /// A rendering under way: its width, and where it arrives.
+    pending: Option<(u32, mpsc::Receiver<egui::ColorImage>)>,
+    bytes: usize,
+    last_drawn: u64,
+}
+
+/// Renderings at once, and the texture memory panel art may use.
+const ART_WORKERS: usize = 2;
+const ART_BUDGET_BYTES: usize = 256 << 20;
+
+impl ArtCache {
+    /// The texture of `art` for a panel `size` (panel units) seen at
+    /// `pixels` screen pixels per unit, or `None` until it's been rendered.
+    /// Rendered in 1.5x steps of scale, so zooming doesn't re-render it
+    /// every frame.
+    fn texture(
+        &mut self,
+        ctx: &egui::Context,
+        art: &Arc<LoadedArt>,
+        size: Vec2,
+        pixels: f32,
+    ) -> Option<egui::TextureId> {
+        let scale = 1.5f32.powf(pixels.max(0.25).log(1.5).ceil()).min(4.0);
+        let (w, h) = (
+            (size.x * scale).round().clamp(1.0, 4096.0) as u32,
+            (size.y * scale).round().clamp(1.0, 4096.0) as u32,
+        );
+        let busy = self.entries.values().filter(|e| e.pending.is_some()).count();
+        let entry = self
+            .entries
+            .entry((art.path.clone(), art.generation))
+            .or_default();
+        entry.last_drawn = self.frame;
+
+        if let Some((pw, rx)) = &entry.pending {
+            match rx.try_recv() {
+                Ok(image) => {
+                    let name = format!("panel art {}", art.path.display());
+                    entry.bytes = image.pixels.len() * 4;
+                    entry.texture = Some((*pw, ctx.load_texture(name, image, egui::TextureOptions::LINEAR)));
+                    entry.pending = None;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => entry.pending = None,
+                Err(mpsc::TryRecvError::Empty) => ctx.request_repaint_after(Duration::from_millis(30)),
+            }
+        }
+        let current =
+            entry.texture.as_ref().map(|t| t.0) == Some(w) || entry.pending.as_ref().map(|p| p.0) == Some(w);
+        if !current && busy < ART_WORKERS {
+            let (tx, rx) = mpsc::channel();
+            let art = art.clone();
+            let started = std::thread::Builder::new()
+                .name("panel art".into())
+                .spawn(move || {
+                    if let Some(image) = rasterize(&art, w, h) {
+                        let _ = tx.send(image);
+                    }
+                });
+            if started.is_ok() {
+                entry.pending = Some((w, rx));
+                ctx.request_repaint_after(Duration::from_millis(30));
+            }
+        }
+        entry.texture.as_ref().map(|t| t.1.id())
+    }
+
+    /// Once per frame: keep the textures within budget, dropping the least
+    /// recently drawn (art that's been replaced is never drawn again).
+    fn end_frame(&mut self) {
+        self.frame += 1;
+        let mut total: usize = self.entries.values().map(|e| e.bytes).sum();
+        if total <= ART_BUDGET_BYTES {
+            return;
+        }
+        let mut by_age: Vec<((PathBuf, u64), u64)> = self
+            .entries
+            .iter()
+            .map(|(k, e)| (k.clone(), e.last_drawn))
+            .collect();
+        by_age.sort_by_key(|(_, last)| *last);
+        for (key, _) in by_age {
+            if total <= ART_BUDGET_BYTES {
+                break;
+            }
+            if let Some(e) = self.entries.remove(&key) {
+                total -= e.bytes;
+            }
+        }
+    }
+}
+
+fn rasterize(art: &LoadedArt, w: u32, h: u32) -> Option<egui::ColorImage> {
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(w, h)?;
+    let s = art.art.tree.size();
+    let fit = resvg::tiny_skia::Transform::from_scale(w as f32 / s.width(), h as f32 / s.height());
+    resvg::render(&art.art.tree, fit, &mut pixmap.as_mut());
+    Some(egui::ColorImage::from_rgba_premultiplied(
+        [w as usize, h as usize],
+        pixmap.data(),
+    ))
 }
 
 #[cfg(test)]
