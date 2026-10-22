@@ -14,18 +14,18 @@ The showcase patch, which the app opens with, works like this:
 
 The tearing, noise bars and soft color all come from the emulated signal, not from a filter. [Watch the full demo video](https://github.com/bradbrok/destruct-o-vision/releases/download/v0.1.1/destruct-o-vision-demo.mp4) (15 s, 60 fps).
 
-**Status: pre-alpha.** The app has a VCV-style rack: modules sit on rails, and you patch them with cables. It ships with 35 modules:
+**Status: pre-alpha.** The app has a VCV-style rack: modules sit on rails, and you patch them with cables. It ships with 38 modules:
 - **Sources:** VCO, Ramps, Shape, Noise, a live Camera (macOS), Text, 3D Text, and 3D Object
 - **Processing:** Mixer, VCA, Folder, Keyer, Chroma Key, a line-scan Filter, Blur, Edge, Posterize
 - **Color:** Colorize, RGB Combine/Split
 - **Space & time:** Feedback frame store, Delay (echo, freeze, and slit-scan through its Time CV), Displace, Mirror, Mosaic
 - **Analog signal path:** Encoder, Inject, Cable, VCR, TBC, TV
-- **Control:** LFO (Hz, or BPM with note values on a shared beat grid; Trig output), Macros
+- **Control:** LFO (Hz, or BPM with note values on a shared beat grid; Trig output), Macros, Audio In (any connected input and channel, picked by name; a resonant low/band/high-pass filter into an envelope follower, with Gate and Trig), MIDI Notes (pitch, gate, velocity, trigger), MIDI CC (four controllers, with learn)
 - **I/O:** Monitor, Output
 
 **3D and text.** 3D Object and 3D Text are raymarched per pixel, so a video signal patched into their rotation, twist or size CVs bends them line by line, and video patched into Tex paints their surfaces. Text renders whatever you type on its panel as a fill, outline, glow or contour bands, in system fonts.
 
-**Patching rules.** Ring colors show what a jack carries: gray and amber are video, blue is control (one value per field), green is composite. Video can plug into blue jacks too; it arrives as the picture's average brightness, a field or two late. Feedback's CVs are video-rate, so a picture patched into them warps the feedback pixel by pixel.
+**Patching rules.** Ring colors show what a jack carries: gray and amber are video, blue is control (one value per field), green is composite. A light beside each control output shows its level. Video can plug into blue jacks too; it arrives as the picture's average brightness, a field or two late. Feedback's CVs are video-rate, so a picture patched into them warps the feedback pixel by pixel.
 
 Monitor, Output, Camera and TV show live pictures right in their panels. The Output module can display its picture clean, or on a simulated CRT with scan lines, phosphor mask, glow and curvature.
 
@@ -42,6 +42,7 @@ Built-in demo patches (also on the File menu):
 - `--demo time` (delays and chroma key)
 - `--demo lab` (3D text over swirling feedback, with video driving a control jack)
 - `--demo camera`
+- `--demo audio` (the kick drum pumps a feedback tunnel; the hi-hats fold the oscillators)
 - `--demo tv:vcr,cable`, a minimal Encoder → stages → TV chain
 
 **In the rack:**

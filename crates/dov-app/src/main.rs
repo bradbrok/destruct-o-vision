@@ -41,7 +41,7 @@ const USAGE: &str = "\
 usage: destructovision [options]
   --patch FILE           open a patch (default: the demo patch)
   --demo NAME            start from a built-in patch: showcase (the default) | feedback | analog |
-                         time | lab | camera | empty,
+                         time | lab | camera | audio | empty,
                          or tv[:stage,...], e.g. tv:vcr,cable (Encoder -> stages -> TV)
   --set TYPE:PARAM=VAL   set a param on every module of a type, e.g. dov.vcr:tracking=0.5
   --raster NAME          ntsc | pal | 720p | 1080p (default ntsc)
@@ -356,6 +356,7 @@ impl AppState {
                     demo::tv(&stages.iter().map(String::as_str).collect::<Vec<_>>())
                 }
                 Some("camera") => demo::camera(),
+                Some("audio") => demo::audio(),
                 Some("empty") => demo::empty(),
                 Some("feedback") => demo::demo(),
                 _ => demo::showcase(),
@@ -706,6 +707,10 @@ impl AppState {
                 self.rack = demo::camera();
                 self.ui.rack_view.fit();
             }
+            UiAction::LoadAudioDemo => {
+                self.rack = demo::audio();
+                self.ui.rack_view.fit();
+            }
             UiAction::Open(path) => self.open(&path),
             UiAction::Save => match self.rack.path.clone() {
                 Some(path) => self.save(path),
@@ -797,13 +802,16 @@ impl AppState {
             .enumerate()
             .map(|(i, m)| m.name().unwrap_or_else(|| format!("Display {}", i + 1)))
             .collect();
+        let mut stats = self.engine.stats();
+        let controls = std::mem::take(&mut stats.controls).into_iter().collect();
         let frame = ui::FrameData {
-            stats: self.engine.stats(),
+            stats,
             output_preview: self.previews.output,
             probe: ProbeView {
                 texture: self.previews.probe,
                 aspect: self.previews.aspect,
                 screens: self.screens.clone(),
+                controls,
             },
             probing: self.probe.is_some(),
             monitors: &monitors,

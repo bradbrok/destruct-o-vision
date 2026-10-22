@@ -99,6 +99,66 @@ pub fn camera() -> Rack {
     rack
 }
 
+/// The feedback demo played by sound: the kick band pumps the circle and
+/// pushes the tunnel forward, and the highs fold the oscillators harder.
+pub fn audio() -> Rack {
+    let mut rack = Rack::default();
+    let mut add = |kind: &str, row: i32| {
+        let ty = dov_modules::find(kind).unwrap_or_else(|| panic!("missing module {kind}"));
+        let col = rack.row_end(row);
+        rack.add_module(ty, row, col)
+    };
+    let vco_a = add("dov.vco", 0);
+    let vco_b = add("dov.vco", 0);
+    let mixer = add("dov.mixer", 0);
+    let fold = add("dov.fold", 0);
+    let colorize = add("dov.colorize", 0);
+    let kick = add("dov.audio", 1);
+    let highs = add("dov.audio", 1);
+    let shape = add("dov.shape", 1);
+    let feedback = add("dov.feedback", 1);
+    let keyer = add("dov.keyer", 1);
+    let output = add("dov.output", 1);
+
+    set(&rack, vco_b, "range", 1.0);
+    set(&rack, vco_b, "multiple", 6.0);
+    set(&rack, vco_b, "detune", 0.25);
+    set(&rack, vco_b, "shape", 1.0);
+    set(&rack, mixer, "lb", -1.0);
+    set(&rack, kick, "filter", 1.0);
+    set(&rack, kick, "freq", 120.0);
+    set(&rack, kick, "release", 180.0);
+    set(&rack, highs, "filter", 3.0);
+    set(&rack, highs, "freq", 5000.0);
+    set(&rack, highs, "release", 80.0);
+    set(&rack, shape, "size", 0.18);
+    set_cv(&rack, shape, "size", 0.4);
+    set(&rack, feedback, "zoom", 1.015);
+    set_cv(&rack, feedback, "zoom", 0.04);
+    set(&rack, feedback, "rotate", 1.5);
+    set(&rack, feedback, "decay", 0.93);
+    set_cv(&rack, fold, "gain", 0.4);
+
+    for (from, out, to, inp) in [
+        (vco_a, "out", mixer, "a"),
+        (vco_b, "out", mixer, "b"),
+        (mixer, "out", fold, "sig"),
+        (fold, "out", colorize, "sig"),
+        (kick, "env", shape, "size_cv"),
+        (kick, "env", feedback, "zoom_cv"),
+        (highs, "env", fold, "gain_cv"),
+        (shape, "out", keyer, "key"),
+        (colorize, "out", keyer, "fg"),
+        (feedback, "out", keyer, "bg"),
+        (keyer, "out", feedback, "sig"),
+        (keyer, "out", output, "sig"),
+    ] {
+        rack.connect(addr(from, out), addr(to, inp), None);
+    }
+    rack.clear_history();
+    rack
+}
+
 /// The analog signal path: oscillator patterns encoded to composite, through
 /// a VCR and a cable into a TV. A field-locked VCO waits on Inject; turn up
 /// Macros A to push it into the sync and watch the TV lose lock.
@@ -538,6 +598,15 @@ mod tests {
         assert!(schedule.warnings.is_empty(), "{:?}", schedule.warnings);
         assert_eq!(rack.snapshot().cables.len(), rack.cables.len());
         assert_eq!(schedule.sampled_outputs.len(), 1, "the matte drives the VCO");
+    }
+
+    #[test]
+    fn audio_patch_is_fully_wired() {
+        let rack = audio();
+        let schedule = dov_engine::graph::schedule(&rack.snapshot());
+        assert!(schedule.warnings.is_empty(), "{:?}", schedule.warnings);
+        assert_eq!(rack.snapshot().cables.len(), rack.cables.len());
+        assert_eq!(schedule.control.len(), 2, "both followers run on the CPU");
     }
 
     #[test]

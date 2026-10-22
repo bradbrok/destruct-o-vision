@@ -4,9 +4,13 @@
 //! the module format is, so module authors can copy them freely. The rest of
 //! the file is GPL-3.0-or-later like the rest of the app.
 
-use dov_core::{Category, CompositeOp, FONTS, Kernel, ModuleDesc, ParamDesc, PortDesc, PortKind, TextSpec};
+use dov_core::{
+    Category, CompositeOp, FONTS, Kernel, Live, ModuleDesc, ParamDesc, PortDesc, PortKind, TextSpec,
+};
 
+use crate::audio::AudioIn;
 use crate::behaviors::{Cable, Encoder, Lfo, Macros, Spin, Vco};
+use crate::midi::{self, MidiCc, MidiNotes};
 use crate::{ModuleType, Origin};
 
 const MONO: PortKind = PortKind::Mono;
@@ -49,6 +53,9 @@ static BUILTINS: &[Builtin] = &[
     Builtin::Rust(&FEEDBACK),
     Builtin::Rust(&LFO),
     Builtin::Rust(&MACROS),
+    Builtin::Rust(&AUDIO_IN),
+    Builtin::Rust(&MIDI_NOTES),
+    Builtin::Rust(&MIDI_CC),
     file!("output.wgsl"),
     file!("displace.wgsl"),
     file!("mirror.wgsl"),
@@ -232,6 +239,120 @@ static MACROS: ModuleType = ModuleType {
         kernel: Kernel::Control,
     },
     behavior: Some(|| Box::new(Macros)),
+    origin: Origin::BuiltIn,
+};
+
+static AUDIO_IN: ModuleType = ModuleType {
+    desc: ModuleDesc {
+        id: "dov.audio",
+        name: "Audio In",
+        category: Category::Control,
+        description: "Audio as control. Pick an input and a channel from what's connected. A \
+                      resonant filter picks out a band (Low for the kick, High for hats) and an \
+                      envelope follower turns its loudness into Env. Gate is on while Env is \
+                      over Thresh, and Trig fires as it opens.",
+        inputs: &[],
+        outputs: &[
+            PortDesc::new("env", "Env", CONTROL),
+            PortDesc::new("gate", "Gate", CONTROL),
+            PortDesc::new("trig", "Trig", CONTROL),
+        ],
+        params: &[
+            // Mixed, then each channel the device has.
+            ParamDesc::choice("channel", "Channel", &["1+2"]).live(Live::AudioChannels),
+            ParamDesc::choice("filter", "Filter", &["Full", "Low", "Band", "High"]),
+            ParamDesc::knob("freq", "Freq", 20.0, 16_000.0, 150.0)
+                .exp()
+                .unit("Hz")
+                .control_cv(),
+            ParamDesc::knob("q", "Q", 0.5, 20.0, 0.707).exp().control_cv(),
+            ParamDesc::knob("gain", "Gain", -24.0, 48.0, 12.0)
+                .unit("dB")
+                .control_cv(),
+            ParamDesc::knob("attack", "Attack", 0.1, 1000.0, 5.0)
+                .exp()
+                .unit("ms"),
+            ParamDesc::knob("release", "Release", 1.0, 5000.0, 150.0)
+                .exp()
+                .unit("ms"),
+            ParamDesc::knob("threshold", "Thresh", 0.0, 1.0, 0.5),
+            ParamDesc::choice("response", "Response", &["Lin", "Log"]),
+        ],
+        screen: false,
+        ring: None,
+        // The input device's name; empty for the system default.
+        text: Some(TextSpec {
+            default: "",
+            live: Some(Live::AudioInputs),
+        }),
+        kernel: Kernel::Control,
+    },
+    behavior: Some(|| Box::new(AudioIn::default())),
+    origin: Origin::BuiltIn,
+};
+
+static MIDI_NOTES: ModuleType = ModuleType {
+    desc: ModuleDesc {
+        id: "dov.midinotes",
+        name: "MIDI Notes",
+        category: Category::Control,
+        description: "Notes from any MIDI device as control. Pitch runs 0..1 from Low to High \
+                      (notes outside are ignored, for splits), Gate is on while a key is held, \
+                      Vel is how hard it was struck and Trig fires on every note. The last \
+                      note held wins.",
+        inputs: &[],
+        outputs: &[
+            PortDesc::new("pitch", "Pitch", CONTROL),
+            PortDesc::new("gate", "Gate", CONTROL),
+            PortDesc::new("vel", "Vel", CONTROL),
+            PortDesc::new("trig", "Trig", CONTROL),
+        ],
+        params: &[
+            ParamDesc::choice("channel", "Channel", &midi::CHANNELS),
+            ParamDesc::knob("low", "Low", 0.0, 127.0, 0.0),
+            ParamDesc::knob("high", "High", 0.0, 127.0, 127.0),
+            ParamDesc::knob("bend", "Bend", 0.0, 24.0, 2.0).unit("st"),
+            ParamDesc::knob("glide", "Glide", 0.0, 2000.0, 0.0).unit("ms"),
+        ],
+        screen: false,
+        ring: None,
+        text: None,
+        kernel: Kernel::Control,
+    },
+    behavior: Some(|| Box::new(MidiNotes::default())),
+    origin: Origin::BuiltIn,
+};
+
+static MIDI_CC: ModuleType = ModuleType {
+    desc: ModuleDesc {
+        id: "dov.midicc",
+        name: "MIDI CC",
+        category: Category::Control,
+        description: "Four MIDI controllers (knobs, faders, the mod wheel) as control outputs, \
+                      0..1. Set each output's CC number, or set Learn to an output and move a \
+                      control. Smooth glides over the steps between MIDI values.",
+        inputs: &[],
+        outputs: &[
+            PortDesc::new("a", "A", CONTROL),
+            PortDesc::new("b", "B", CONTROL),
+            PortDesc::new("c", "C", CONTROL),
+            PortDesc::new("d", "D", CONTROL),
+        ],
+        params: &[
+            ParamDesc::choice("channel", "Channel", &midi::CHANNELS),
+            ParamDesc::choice("learn", "Learn", &["Off", "A", "B", "C", "D"]),
+            ParamDesc::knob("cc_a", "CC A", 0.0, 127.0, 1.0),
+            ParamDesc::knob("cc_b", "CC B", 0.0, 127.0, 2.0),
+            ParamDesc::knob("cc_c", "CC C", 0.0, 127.0, 3.0),
+            ParamDesc::knob("cc_d", "CC D", 0.0, 127.0, 4.0),
+            ParamDesc::knob("smooth", "Smooth", 0.0, 1000.0, 30.0).unit("ms"),
+        ],
+        screen: false,
+        ring: None,
+        text: None,
+        kernel: Kernel::Control,
+    },
+    behavior: Some(|| Box::new(MidiCc::default())),
     origin: Origin::BuiltIn,
 };
 
@@ -757,7 +878,10 @@ static TEXT_3D: ModuleType = ModuleType {
         ],
         screen: false,
         ring: None,
-        text: Some(TextSpec { default: "DOV" }),
+        text: Some(TextSpec {
+            default: "DOV",
+            live: None,
+        }),
         kernel: Kernel::Pointwise(concat!(
             wgsl_3d!(),
             r#"

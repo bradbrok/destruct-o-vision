@@ -1,7 +1,7 @@
 //! CPU behaviors: per-field work that the GPU can't do well, like f64 phase
 //! accumulation and control-rate signal generation.
 
-use dov_core::{ModuleDesc, ParamKind, PhaseAcc, PortKind, RasterPhase, SyncReset};
+use dov_core::{ModuleDesc, ParamBank, ParamKind, PhaseAcc, PortKind, RasterPhase, SyncReset};
 
 use crate::{Behavior, EXTRA_SLOTS, FieldCtx};
 
@@ -10,6 +10,9 @@ pub struct FieldIo<'a> {
     pub desc: &'a ModuleDesc,
     /// Param slots: params followed by attenuverters.
     pub slots: &'a [f32],
+    /// The live params behind `slots`, for behaviors that turn their own
+    /// knobs (MIDI learn).
+    pub params: &'a ParamBank,
     /// One value per input: the upstream control value when a control
     /// source is patched, otherwise the port default. Video-rate signals
     /// aren't visible here.
@@ -29,6 +32,12 @@ impl FieldIo<'_> {
     pub fn choice(&self, i: usize) -> u32 {
         choice_value(self.desc, self.slots, self.inputs, i)
     }
+
+    /// Turns a knob or flips a switch as if the user had: the panel shows
+    /// it and saved patches keep it. `slots` still holds the old value.
+    pub fn set_param(&self, i: usize, v: f32) {
+        self.params.set(i, v);
+    }
 }
 
 /// See [`FieldIo::param`].
@@ -43,9 +52,11 @@ pub fn param_value(desc: &ModuleDesc, slots: &[f32], inputs: &[f32], i: usize) -
 
 /// See [`FieldIo::choice`].
 pub fn choice_value(desc: &ModuleDesc, slots: &[f32], inputs: &[f32], i: usize) -> u32 {
-    let n = match desc.params[i].kind {
-        ParamKind::Choice { options, .. } => options.len() as u32,
-        ParamKind::Knob { .. } => u32::MAX,
+    let p = &desc.params[i];
+    let n = match p.kind {
+        // A live list runs past the fixed options; its length isn't known here.
+        ParamKind::Choice { options, .. } if p.live.is_none() => options.len() as u32,
+        ParamKind::Choice { .. } | ParamKind::Knob { .. } => u32::MAX,
     };
     (param_value(desc, slots, inputs, i).round().max(0.0) as u32).min(n.saturating_sub(1))
 }
@@ -283,6 +294,7 @@ mod tests {
             values[desc.param_index(id).unwrap()] = *v;
         }
         let inputs: Vec<f32> = desc.inputs_full().iter().map(|p| p.default).collect();
+        let params = ParamBank::new(&values);
         let mut behavior = (ty.behavior.unwrap())();
         let raster = RasterStd::NTSC;
         let mut out = Vec::new();
@@ -297,6 +309,7 @@ mod tests {
             let mut io = FieldIo {
                 desc,
                 slots: &values,
+                params: &params,
                 inputs: &inputs,
                 extra: &mut extra,
                 outputs: &mut outputs,

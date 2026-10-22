@@ -97,6 +97,7 @@ fn desc(m: f::Module) -> ModuleDesc {
                 f::Cv::Video => PortKind::Mono,
                 f::Cv::Control => PortKind::Control,
             }),
+            live: None,
         })
         .collect();
     let source = leak(m.source);
@@ -121,7 +122,10 @@ fn desc(m: f::Module) -> ModuleDesc {
             freeze_param: h.freeze,
             fields: h.fields,
         }),
-        text: m.text_default.map(|t| TextSpec { default: leak(t) }),
+        text: m.text_default.map(|t| TextSpec {
+            default: leak(t),
+            live: None,
+        }),
         kernel: match iface.kernel {
             f::KernelKind::Pointwise => Kernel::Pointwise(source),
             f::KernelKind::LineScan => Kernel::LineScan(source),
@@ -272,6 +276,7 @@ pub fn missing(
             ring: None,
             text: text.map(|t| TextSpec {
                 default: leak(t.to_string()),
+                live: None,
             }),
             kernel: Kernel::Control,
         },

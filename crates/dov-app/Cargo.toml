@@ -16,6 +16,7 @@ path = "src/main.rs"
 dov-core.workspace = true
 dov-engine.workspace = true
 dov-format.workspace = true
+dov-io.workspace = true
 dov-modules.workspace = true
 wgpu.workspace = true
 winit.workspace = true

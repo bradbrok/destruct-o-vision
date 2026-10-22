@@ -132,16 +132,14 @@ impl Drop for CameraSource {
 mod platform {
     use std::sync::Arc;
     use std::sync::mpsc;
-    use std::time::Duration;
 
-    use block2::RcBlock;
     use dispatch2::DispatchQueue;
     use objc2::rc::{Retained, autoreleasepool};
-    use objc2::runtime::{AnyObject, Bool, NSObject, ProtocolObject};
+    use objc2::runtime::{AnyObject, NSObject, ProtocolObject};
     use objc2::{AllocAnyThread, DefinedClass, define_class, msg_send};
     use objc2_av_foundation::{
-        AVAuthorizationStatus, AVCaptureConnection, AVCaptureDevice, AVCaptureDeviceInput, AVCaptureOutput,
-        AVCaptureSession, AVCaptureSessionPreset1280x720, AVCaptureVideoDataOutput,
+        AVCaptureConnection, AVCaptureDevice, AVCaptureDeviceInput, AVCaptureOutput, AVCaptureSession,
+        AVCaptureSessionPreset1280x720, AVCaptureVideoDataOutput,
         AVCaptureVideoDataOutputSampleBufferDelegate, AVMediaTypeVideo,
     };
     use objc2_core_media::CMSampleBuffer;
@@ -209,30 +207,8 @@ mod platform {
         }
     }
 
-    /// Asks for camera access if needed. Blocks this worker thread only.
-    fn authorized() -> bool {
-        // SAFETY: AVMediaTypeVideo is a framework constant.
-        let Some(video) = (unsafe { AVMediaTypeVideo }) else {
-            return false;
-        };
-        // SAFETY: plain class-method calls with a valid media type.
-        match unsafe { AVCaptureDevice::authorizationStatusForMediaType(video) } {
-            AVAuthorizationStatus::Authorized => true,
-            AVAuthorizationStatus::NotDetermined => {
-                let (tx, rx) = mpsc::channel();
-                let block = RcBlock::new(move |granted: Bool| {
-                    let _ = tx.send(granted.as_bool());
-                });
-                // SAFETY: the block is retained by AVFoundation until it runs.
-                unsafe { AVCaptureDevice::requestAccessForMediaType_completionHandler(video, &block) };
-                rx.recv_timeout(Duration::from_secs(300)).unwrap_or(false)
-            }
-            _ => false,
-        }
-    }
-
     pub(super) fn run(index: usize, shared: &Arc<Shared>, stop: mpsc::Receiver<()>) {
-        if !authorized() {
+        if !crate::access::authorized(crate::access::Device::Camera) {
             shared.set_status(CameraStatus::Denied);
             return;
         }

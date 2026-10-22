@@ -1,9 +1,10 @@
-//! Pacing telemetry published by the engine for the UI.
+//! Telemetry published by the engine for the UI: pacing, warnings and
+//! control signal levels.
 
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use dov_core::RasterStd;
+use dov_core::{ModuleId, RasterStd};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct IntervalSummary {
@@ -96,8 +97,10 @@ pub struct EngineStats {
     pub modules: usize,
     /// GPU passes per field.
     pub passes: usize,
-    /// Problems found while scheduling the patch.
+    /// Problems found while scheduling the patch, and device trouble.
     pub warnings: Vec<String>,
+    /// Each module's control outputs, as of the last field.
+    pub controls: Vec<(ModuleId, Vec<f32>)>,
     pub recent_present_ms: Vec<f32>,
 }
 
@@ -121,6 +124,7 @@ impl Default for EngineStats {
             modules: 0,
             passes: 0,
             warnings: Vec::new(),
+            controls: Vec::new(),
             recent_present_ms: Vec::new(),
         }
     }

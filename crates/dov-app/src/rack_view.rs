@@ -7,7 +7,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
-use dov_core::{Category, ModuleDesc, ModuleId, ParamBank, ParamKind, Patch, PortAddr, PortKind};
+use dov_core::{Category, Live, ModuleDesc, ModuleId, ParamBank, ParamKind, Patch, PortAddr, PortKind};
+use dov_io::InputDevice;
 use dov_modules::{ModuleType, Origin};
 use egui::emath::TSTransform;
 use egui::load::SizedTexture;
@@ -66,7 +67,10 @@ pub struct ProbeView {
     pub texture: egui::TextureId,
     pub aspect: f32,
     /// Live pictures for modules with a screen.
-    pub screens: std::collections::HashMap<ModuleId, egui::TextureId>,
+    pub screens: HashMap<ModuleId, egui::TextureId>,
+    /// Each module's control outputs as of the last field, for the lights
+    /// by their jacks.
+    pub controls: HashMap<ModuleId, Vec<f32>>,
 }
 
 pub struct RackView {
@@ -80,6 +84,8 @@ pub struct RackView {
     to_global: TSTransform,
     /// Panel art, rasterized off the UI thread.
     art: ArtCache,
+    /// The audio inputs as of the last time a list of them was opened.
+    audio_inputs: Vec<InputDevice>,
 }
 
 impl Default for RackView {
@@ -93,6 +99,7 @@ impl Default for RackView {
             hovered_module: None,
             to_global: TSTransform::IDENTITY,
             art: ArtCache::default(),
+            audio_inputs: Vec::new(),
         }
     }
 }
@@ -351,6 +358,9 @@ impl RackView {
         let accent = panel::category_color(desc.category);
         let inputs = desc.inputs_full();
         match placed.element {
+            Element::Text if desc.text.and_then(|t| t.live) == Some(Live::AudioInputs) => {
+                self.audio_input_picker(ui, ctx, cell, actions);
+            }
             Element::Text => {
                 let mut text = params.text();
                 let field = egui::TextEdit::singleline(&mut text)
@@ -366,6 +376,9 @@ impl RackView {
                     params.set_text(&text);
                 }
                 response.on_hover_text("Type here; the text renders live");
+            }
+            Element::Choice { param } if desc.params[param].live.is_some() => {
+                self.live_choice(ui, ctx, cell, param, actions);
             }
             Element::Choice { param } => {
                 let p = &desc.params[param];
@@ -526,6 +539,112 @@ impl RackView {
         }
     }
 
+    /// The text row of a module that listens to an audio input: the
+    /// device's name, and a list of the inputs connected now to pick from.
+    fn audio_input_picker(&mut self, ui: &mut Ui, ctx: &ElementCtx, cell: Rect, actions: &mut Vec<Action>) {
+        let response = ui.interact(
+            cell.shrink2(vec2(0.0, 3.0)),
+            Id::unique(("text", ctx.id)),
+            Sense::click(),
+        );
+        if response.clicked() {
+            self.audio_inputs = dov_io::audio::input_devices();
+        }
+        let current = ctx.params.text();
+        let shown = if current.is_empty() {
+            "Default input"
+        } else {
+            &current
+        };
+        panel::draw_picker(ctx.painter, cell, shown, response.hovered());
+
+        let mut picked = None;
+        egui::Popup::menu(&response).show(|ui| {
+            let default = self.audio_inputs.iter().find(|d| d.default);
+            let label = default.map_or_else(
+                || "Default input".into(),
+                |d| format!("Default input ({})", d.name),
+            );
+            if ui.selectable_label(current.is_empty(), label).clicked() {
+                picked = Some(String::new());
+            }
+            ui.separator();
+            for d in &self.audio_inputs {
+                let plural = if d.channels == 1 { "" } else { "s" };
+                let label = format!("{}  ·  {} channel{plural}", d.name, d.channels);
+                if ui.selectable_label(current == d.name, label).clicked() {
+                    picked = Some(d.name.clone());
+                }
+            }
+            if self.audio_inputs.is_empty() {
+                ui.label("No audio inputs connected");
+            }
+            // A patch made with a device that isn't here keeps asking for it.
+            if !current.is_empty() && !self.audio_inputs.iter().any(|d| d.name == current) {
+                ui.add_enabled(
+                    false,
+                    egui::Button::selectable(true, format!("{current} (not connected)")),
+                );
+            }
+        });
+        if let Some(name) = picked.filter(|name| *name != current) {
+            actions.push(Action::Undo(Box::new(ctx.rack.to_patch())));
+            ctx.params.set_text(&name);
+        }
+        response.on_hover_text(format!(
+            "Audio input: {shown}\nClick to choose from the inputs connected now"
+        ));
+    }
+
+    /// A choice whose options run on into a list found at run time, such
+    /// as the channels of the module's audio input. Click to pick.
+    fn live_choice(
+        &mut self,
+        ui: &mut Ui,
+        ctx: &ElementCtx,
+        cell: Rect,
+        param: usize,
+        actions: &mut Vec<Action>,
+    ) {
+        let p = &ctx.desc.params[param];
+        let (ParamKind::Choice { options, .. }, Some(list)) = (p.kind, p.live) else {
+            return;
+        };
+        let response = ui.interact(
+            cell.shrink(3.0),
+            Id::unique(("param", ctx.id, param)),
+            Sense::click(),
+        );
+        if response.clicked() {
+            self.audio_inputs = dov_io::audio::input_devices();
+        }
+        let v = ctx.params.get(param).round().max(0.0) as usize;
+        let name = p.option_name(v).unwrap_or_default();
+        let label = if ctx.labels { p.name } else { "" };
+        panel::draw_switch(ctx.painter, cell, label, &name, response.hovered());
+
+        let count = options.len() + live_len(list, ctx.params, &self.audio_inputs);
+        let mut picked = None;
+        egui::Popup::menu(&response).show(|ui| {
+            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                for i in 0..count {
+                    let option = p.option_name(i).unwrap_or_default();
+                    if ui.selectable_label(i == v, option.as_ref()).clicked() {
+                        picked = Some(i);
+                    }
+                }
+            });
+            if count == options.len() {
+                ui.label("Its input isn't connected");
+            }
+        });
+        if let Some(i) = picked.filter(|&i| i != v) {
+            actions.push(Action::Undo(Box::new(ctx.rack.to_patch())));
+            ctx.params.set(param, i as f32);
+        }
+        response.on_hover_text(format!("{}: {name}\nClick to choose", p.name));
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn jack(
         &mut self,
@@ -572,16 +691,24 @@ impl RackView {
             );
         }
 
-        // What this jack carries, for the probe: an output's own signal, or
-        // whatever is patched into an input.
-        let source = match end.side {
-            Side::Out => kind.is_video().then_some((end.module, end.index)),
+        // What this jack carries: an output's own signal, or whatever is
+        // patched into an input. Video goes to the probe; control values
+        // light the output's LED and show in the tooltip.
+        let carried = match end.side {
+            Side::Out => Some((end.module, end.index, kind)),
             Side::In => plugged.and_then(|c| {
                 let from = end_of(rack, &c.from, Side::Out)?;
                 let out_kind = rack.module(from.module)?.ty.desc.outputs[from.index].kind;
-                out_kind.is_video().then_some((from.module, from.index))
+                Some((from.module, from.index, out_kind))
             }),
         };
+        let source = carried.and_then(|(m, k, kind)| kind.is_video().then_some((m, k)));
+        let value = carried
+            .filter(|&(.., kind)| kind == PortKind::Control)
+            .and_then(|(m, k, _)| ctx.probe.controls.get(&m)?.get(k).copied());
+        if let (Side::Out, Some(v)) = (end.side, value) {
+            panel::draw_led(ctx.painter, center + vec2(JACK_R + 4.0, -JACK_R + 1.0), v);
+        }
         if response.hovered() && self.cable_drag.is_none() {
             *probe_target = source;
         }
@@ -608,6 +735,9 @@ impl RackView {
             ui.strong(format!("{name} ({kind_name})"));
             if let Some(label) = &from_label {
                 ui.label(label);
+            }
+            if let Some(v) = value {
+                ui.label(format!("{v:.3}"));
             }
             if source.is_some() {
                 let size = vec2(192.0, 192.0 / probe.aspect);
@@ -729,6 +859,26 @@ fn jack_of(p: &Placed) -> Option<(Side, usize)> {
         Element::Input { input } | Element::Cv { input, .. } => Some((Side::In, input)),
         Element::Output { output } => Some((Side::Out, output)),
         Element::Text | Element::Choice { .. } | Element::Knob { .. } => None,
+    }
+}
+
+/// How many entries a live list has now, for a module with these params.
+fn live_len(list: Live, params: &ParamBank, audio_inputs: &[InputDevice]) -> usize {
+    match list {
+        Live::AudioInputs => audio_inputs.len(),
+        Live::AudioChannels => {
+            let device = params.text();
+            audio_inputs
+                .iter()
+                .find(|d| {
+                    if device.is_empty() {
+                        d.default
+                    } else {
+                        d.name == device
+                    }
+                })
+                .map_or(0, |d| d.channels)
+        }
     }
 }
 
@@ -976,6 +1126,7 @@ mod tests {
                 texture: egui::TextureId::Managed(0),
                 aspect: 4.0 / 3.0,
                 screens: Default::default(),
+                controls: Default::default(),
             };
             let (view, rack) = (&mut self.view, &mut self.rack);
             let output = self.ctx.run_ui(input, |ui| {
@@ -1038,6 +1189,25 @@ mod tests {
                 .unwrap();
             let cell = placed.cell.translate(at.to_vec2());
             self.view.to_global * pos2(cell.center().x, cell.top() + 22.0)
+        }
+
+        /// The middle of a module's first panel element that `is` matches.
+        fn element(&self, module: ModuleId, is: impl Fn(Element) -> bool) -> Pos2 {
+            let m = self.rack.module(module).unwrap();
+            let at = pos2(m.pos.1 as f32 * HP, m.pos.0 as f32 * ROW_H);
+            let placed = panel::layout(&m.ty.desc)
+                .elements
+                .iter()
+                .find(|p| is(p.element))
+                .copied()
+                .unwrap();
+            self.view.to_global * placed.cell.translate(at.to_vec2()).center()
+        }
+
+        fn click(&mut self, at: Pos2) {
+            self.press(at, PointerButton::Primary, true);
+            self.press(at, PointerButton::Primary, false);
+            self.frame(vec![]);
         }
     }
 
@@ -1129,6 +1299,39 @@ mod tests {
         assert!(after > before, "{before} -> {after}");
         assert!(h.rack.undo());
         assert_eq!(h.rack.module(vco).unwrap().params.get(slot), before);
+    }
+
+    #[test]
+    fn audio_in_lists_inputs_and_channels_to_pick_from() {
+        let mut rack = Rack::default();
+        let audio = rack.add_module(dov_modules::find("dov.audio").unwrap(), 0, 0);
+        let mut h = Harness::new(rack);
+        let params = h.rack.module(audio).unwrap().params.clone();
+        let channel = h
+            .rack
+            .module(audio)
+            .unwrap()
+            .ty
+            .desc
+            .param_index("channel")
+            .unwrap();
+
+        h.click(h.element(audio, |e| matches!(e, Element::Text)));
+        assert!(egui::Popup::is_any_open(&h.ctx), "the device row opens a list");
+        assert_eq!(params.text(), "", "the default input until one is picked");
+
+        h.click(pos2(1270.0, 790.0));
+        assert!(!egui::Popup::is_any_open(&h.ctx));
+        h.click(h.element(
+            audio,
+            |e| matches!(e, Element::Choice { param } if param == channel),
+        ));
+        assert!(egui::Popup::is_any_open(&h.ctx), "so does the channel switch");
+        assert_eq!(
+            params.get(channel),
+            0.0,
+            "rather than stepping to the next channel"
+        );
     }
 
     #[test]

@@ -108,6 +108,20 @@ pub struct ParamDesc {
     pub kind: ParamKind,
     /// Kind of the CV jack that modulates this param, if any.
     pub cv: Option<PortKind>,
+    /// For a choice: more options, found at run time, after the fixed ones.
+    pub live: Option<Live>,
+}
+
+/// Options that depend on what's connected, so the app lists them at run
+/// time instead of a module declaring them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Live {
+    /// Audio input devices. On a text field: the text is the chosen
+    /// device's name, or empty for the system's default input.
+    AudioInputs,
+    /// The input channels of the audio device named in the module's text.
+    /// On a choice: one option per channel, numbered from 1.
+    AudioChannels,
 }
 
 impl ParamDesc {
@@ -123,6 +137,7 @@ impl ParamDesc {
                 unit: "",
             },
             cv: None,
+            live: None,
         }
     }
 
@@ -132,6 +147,7 @@ impl ParamDesc {
             name,
             kind: ParamKind::Choice { options, default: 0 },
             cv: None,
+            live: None,
         }
     }
 
@@ -166,6 +182,26 @@ impl ParamDesc {
     pub const fn control_cv(mut self) -> Self {
         self.cv = Some(PortKind::Control);
         self
+    }
+
+    /// Makes a choice's options run on past the fixed ones, into a list
+    /// the app finds at run time. Its value can then be any index.
+    pub const fn live(mut self, list: Live) -> Self {
+        self.live = Some(list);
+        self
+    }
+
+    /// The name of option `index` of a choice: a fixed option, or past
+    /// those, an entry of its live list.
+    pub fn option_name(&self, index: usize) -> Option<Cow<'static, str>> {
+        let ParamKind::Choice { options, .. } = self.kind else {
+            return None;
+        };
+        match (options.get(index), self.live) {
+            (Some(o), _) => Some(Cow::Borrowed(*o)),
+            (None, Some(Live::AudioChannels)) => Some(Cow::Owned((index - options.len() + 1).to_string())),
+            (None, Some(Live::AudioInputs) | None) => None,
+        }
     }
 
     pub fn default_value(&self) -> f32 {
@@ -281,6 +317,8 @@ pub struct ModuleDesc {
 #[derive(Clone, Copy, Debug)]
 pub struct TextSpec {
     pub default: &'static str,
+    /// The text is picked from this list, not typed.
+    pub live: Option<Live>,
 }
 
 /// Longest text a module keeps. Patch files can hold anything, so text is

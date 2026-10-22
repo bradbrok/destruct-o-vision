@@ -44,6 +44,7 @@ pub enum UiAction {
     LoadShowcase,
     LoadDemo,
     LoadCameraDemo,
+    LoadAudioDemo,
     LoadAnalogDemo,
     LoadTimeDemo,
     LoadLabDemo,
@@ -154,6 +155,10 @@ impl AppUi {
                 }
                 if ui.button("Camera demo").clicked() {
                     actions.push(UiAction::LoadCameraDemo);
+                    ui.close();
+                }
+                if ui.button("Audio demo").clicked() {
+                    actions.push(UiAction::LoadAudioDemo);
                     ui.close();
                 }
                 ui.menu_button("Open", |ui| {

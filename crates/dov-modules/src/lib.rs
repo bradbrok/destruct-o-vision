@@ -8,9 +8,11 @@
 //! community modules; the rest are Rust, where they need CPU code or engine
 //! resources.
 
+mod audio;
 mod behaviors;
 mod files;
 mod library;
+mod midi;
 
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
@@ -24,6 +26,11 @@ pub use files::{Scan, load, load_dir, load_files, load_package, missing};
 /// Per-field CPU side of a module.
 pub trait Behavior: Send {
     fn field(&mut self, ctx: &FieldCtx, io: &mut FieldIo);
+
+    /// A problem to show the user, such as a device that won't open.
+    fn warning(&self) -> Option<String> {
+        None
+    }
 }
 
 pub struct FieldCtx<'a> {

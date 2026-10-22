@@ -622,6 +622,7 @@ impl Engine {
         s.modules = self.runtime.module_count();
         s.passes = self.runtime.pass_count();
         s.warnings = self.runtime.warnings();
+        s.controls = self.runtime.control_values();
         s.recent_present_ms.clear();
         s.recent_present_ms.extend(self.present_intervals.samples());
     }

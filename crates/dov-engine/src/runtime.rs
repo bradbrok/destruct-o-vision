@@ -472,7 +472,26 @@ impl Runtime {
                 CameraStatus::Starting | CameraStatus::Running { .. } => {}
             }
         }
+        // Modules sharing a device report the same trouble; say it once.
+        for warning in self
+            .instances
+            .iter()
+            .filter_map(|i| i.behavior.as_ref()?.warning())
+        {
+            if !w.contains(&warning) {
+                w.push(warning);
+            }
+        }
         w
+    }
+
+    /// The latest control outputs of every module that has any.
+    pub fn control_values(&self) -> Vec<(ModuleId, Vec<f32>)> {
+        self.instances
+            .iter()
+            .filter(|i| i.ty.desc.outputs.iter().any(|p| p.kind == PortKind::Control))
+            .map(|i| (i.id, i.control_out.clone()))
+            .collect()
     }
 
     pub fn set_patch(&mut self, device: &wgpu::Device, snap: &PatchSnapshot) {
@@ -758,6 +777,7 @@ impl Runtime {
         let mut io = FieldIo {
             desc: &inst.ty.desc,
             slots: &slots,
+            params: &inst.params,
             inputs: &values,
             extra: &mut inst.extra,
             outputs: &mut inst.control_out,

@@ -11,3 +11,4 @@ repository.workspace = true
 [dependencies]
 dov-core.workspace = true
 dov-format.workspace = true
+dov-io.workspace = true

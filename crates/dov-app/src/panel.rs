@@ -350,11 +350,9 @@ pub fn format_value(p: &ParamDesc, v: f32) -> String {
                 format!("{v:.digits$} {unit}")
             }
         }
-        ParamKind::Choice { options, .. } => options
-            .get(v.round().max(0.0) as usize)
-            .copied()
-            .unwrap_or("?")
-            .to_string(),
+        ParamKind::Choice { .. } => p
+            .option_name(v.round().max(0.0) as usize)
+            .map_or_else(|| "?".into(), |name| name.into_owned()),
     }
 }
 
@@ -541,6 +539,19 @@ pub fn draw_jack(painter: &Painter, center: Pos2, kind: PortKind, highlight: Opt
     }
 }
 
+/// A light showing a control signal's level: blue when positive, red when
+/// negative, brightest at ±1.
+pub fn draw_led(painter: &Painter, center: Pos2, value: f32) {
+    let lit = if value >= 0.0 {
+        kind_color(PortKind::Control)
+    } else {
+        Color32::from_rgb(235, 87, 87)
+    };
+    let color = Color32::from_gray(28).lerp_to_gamma(lit, value.abs().min(1.0));
+    painter.circle_filled(center, 3.5, color);
+    painter.circle_stroke(center, 3.5, Stroke::new(1.0, Color32::from_gray(8)));
+}
+
 pub fn draw_label(painter: &Painter, pos: Pos2, text: &str) {
     painter.text(
         pos,
@@ -571,6 +582,36 @@ pub fn draw_switch(painter: &Painter, rect: Rect, label: &str, value: &str, hot:
         FontId::proportional(11.0),
         Color32::from_rgb(255, 200, 120),
     );
+}
+
+/// A box naming something picked from a list, such as a device: the name,
+/// cut to fit, and a mark showing that clicking opens the list.
+pub fn draw_picker(painter: &Painter, rect: Rect, value: &str, hot: bool) {
+    let body = rect.shrink2(vec2(0.0, 4.0));
+    painter.rect_filled(body, 3.0, Color32::from_gray(if hot { 34 } else { 22 }));
+    painter.rect_stroke(
+        body,
+        3.0,
+        Stroke::new(1.0, Color32::from_gray(70)),
+        StrokeKind::Inside,
+    );
+    let color = Color32::from_rgb(255, 200, 120);
+    let mut job =
+        egui::text::LayoutJob::simple_singleline(value.to_owned(), FontId::proportional(11.0), color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(body.width() - 26.0);
+    let galley = painter.layout_job(job);
+    let at = pos2(body.left() + 8.0, body.center().y - galley.size().y / 2.0);
+    painter.galley(at, galley, color);
+    let mark = pos2(body.right() - 10.0, body.center().y);
+    painter.add(Shape::convex_polygon(
+        vec![
+            mark + vec2(-4.0, -2.0),
+            mark + vec2(4.0, -2.0),
+            mark + vec2(0.0, 3.0),
+        ],
+        Color32::from_gray(160),
+        Stroke::NONE,
+    ));
 }
 
 /// A patch cable hanging between two jacks.
