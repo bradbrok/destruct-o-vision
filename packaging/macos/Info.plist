@@ -31,6 +31,8 @@
     <string>Destruct-O-Vision uses your camera as a video source when you add a Camera module.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Destruct-O-Vision listens to audio input when you add an Audio In module, to turn sound into control signals.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Destruct-O-Vision joins Ableton Link sessions on your network, when you choose Link, to share tempo and beat with Live and other apps.</string>
     <key>NSHumanReadableCopyright</key>
     <string>Free software under the GNU General Public License v3 or later.</string>
 </dict>

@@ -77,6 +77,8 @@ impl IntervalTracker {
 #[derive(Clone, Debug)]
 pub struct EngineStats {
     pub raster: RasterStd,
+    /// The global beat clock.
+    pub tempo: crate::TempoStatus,
     pub field: u64,
     pub fields_rendered: u64,
     /// Field indices skipped because the engine woke up late.
@@ -113,6 +115,7 @@ impl Default for EngineStats {
     fn default() -> Self {
         Self {
             raster: RasterStd::NTSC,
+            tempo: crate::TempoStatus::default(),
             field: 0,
             fields_rendered: 0,
             fields_dropped: 0,

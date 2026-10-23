@@ -12,6 +12,7 @@ mod recorder;
 mod runtime;
 pub mod stats;
 mod text;
+mod transport;
 mod tube;
 
 use std::path::PathBuf;
@@ -23,6 +24,7 @@ use dov_core::{ModuleId, RasterStd};
 
 pub use graph::{PatchSnapshot, SnapshotCable, SnapshotModule};
 pub use stats::{EngineStats, IntervalSummary, IntervalTracker};
+pub use transport::{TempoStatus, TempoSync};
 
 /// Messages from the UI thread to the engine.
 pub enum Command {
@@ -60,6 +62,10 @@ pub enum Command {
         codec: dov_io::Codec,
     },
     StopMovie,
+    /// The patch's tempo, in beats a minute (in a Link session, everyone's).
+    SetTempo(f64),
+    /// Where the tempo comes from.
+    SetSync(TempoSync),
     Shutdown,
 }
 

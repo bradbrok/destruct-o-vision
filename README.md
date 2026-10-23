@@ -20,7 +20,7 @@ The tearing, noise bars and soft color all come from the emulated signal, not fr
 - **Color:** Colorize, RGB Combine/Split
 - **Space & time:** Feedback frame store, Delay (echo, freeze, and slit-scan through its Time CV), Displace, Mirror, Mosaic, Tile (repeat, mirror or brick grids that scroll)
 - **Analog signal path:** Encoder, Inject, Cable, VCR, TBC, TV
-- **Control:** LFO (Hz, or BPM with note values on a shared beat grid; Trig output), Macros, Audio In (any connected input and channel, picked by name; a resonant low/band/high-pass filter into an envelope follower, with Gate and Trig), MIDI Notes (pitch, gate, velocity, trigger), MIDI CC (four controllers, with learn)
+- **Control:** LFO (Hz, or a note value on the global tempo; Trig output), Macros, Audio In (any connected input and channel, picked by name; a resonant low/band/high-pass filter into an envelope follower, with Gate and Trig), MIDI Notes (pitch, gate, velocity, trigger), MIDI CC (four controllers, with learn)
 - **I/O:** Monitor, Output, CRT
 
 **Movies.** Movie plays a movie file (anything QuickTime opens: H.264, HEVC, ProRes) in a loop from In to Out. Speed runs from 4× backward to 4× forward. Loop, Bounce or Once sets what happens at the ends. In Scrub mode, Position picks the frame, so an LFO or Audio In can scrub through the clip. FPS holds frames for a stop-motion look, and BPM sync fits the loop to a note value on the beat grid. Click the file row to choose a movie, or drop movie files onto the rack.
@@ -28,6 +28,13 @@ The tearing, noise bars and soft color all come from the emulated signal, not fr
 Click a Movie's picture to open its editor. Its timeline zooms in to single frames, so you can drag In and Out onto exactly the frame you want, hold the picture and step through it, or scrub. The editor also cuts the movie into splices, as on a Morphagene: Organize (knob and CV) picks the splice to play, Next steps on to the following one, and In and Out trim whichever splice is playing. Keys: space holds, the arrows step a frame (10 with shift), I and O set In and Out, S cuts a splice. Frames are decoded ahead of the playhead and kept in memory, so after its first pass a loop plays from memory, backward too.
 
 **3D and text.** 3D Object and 3D Text are raymarched per pixel, so a video signal patched into their rotation, twist or size CVs bends them line by line, and video patched into Tex paints their surfaces. Text renders whatever you type on its panel as a fill, outline, glow or contour bands, in system fonts.
+
+**Tempo.** The tempo bar at the top right sets the patch's tempo: drag it, type it, or tap it in. It also shows the beat of the bar and chooses where the tempo comes from:
+- **Internal:** the patch's own, saved with it.
+- **Ableton Link:** joins Live's session, or any Link app's on this Mac or the network. Tempo changes go both ways, and bars line up. Turn Link on in Live's settings.
+- **MIDI clock:** follows MIDI clock from any device, including song position. In Live, turn Sync on for a MIDI output, such as the IAC Driver.
+
+LFOs in BPM mode, VCOs in the BPM range and Movies on BPM sync all follow it, each at its own note value.
 
 **Patching rules.** Ring colors show what a jack carries: gray and amber are video, blue is control (one value per field), green is composite. A light beside each control output shows its level. Video can plug into blue jacks too; it arrives as the picture's average brightness, a field or two late. Feedback's CVs are video-rate, so a picture patched into them warps the feedback pixel by pixel.
 
@@ -129,3 +136,5 @@ The module format is under the [MIT License](LICENSE-MIT), so module authors and
 - the WGSL kernels in `crates/dov-modules/src/library.rs`, which are marked there
 
 Modules you write are yours, under whatever license you choose. They are data the app loads, not part of the app.
+
+The app includes [Ableton Link](https://github.com/Ableton/link) through [rusty_link](https://github.com/anzbert/rusty_link), both under the GPL v2 or later.

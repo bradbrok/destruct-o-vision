@@ -13,11 +13,14 @@ use crate::gpu::{self, BlitBinding, Blitter, GpuQueue};
 use crate::recorder::Recorder;
 use crate::runtime::Runtime;
 use crate::stats::{EngineStats, IntervalTracker};
+use crate::transport::Transport;
 use crate::tube::{self, Refresh, Tube, TubeGpu, ViewGpu};
 use crate::{Command, EngineEvent, Preview, Previews};
 
 const STATS_WINDOW: usize = 240;
 const DEFAULT_DISPLAY_HZ: f64 = 60.0;
+/// The tempo until a patch sets one.
+const DEFAULT_BPM: f64 = 120.0;
 /// Height of display captures and recordings, unless `DOV_CAPTURE_HEIGHT`
 /// says otherwise (to see a CRT's mask as a big display shows it).
 const CAPTURE_HEIGHT: u32 = 1080;
@@ -158,6 +161,8 @@ pub(crate) struct Engine {
     recording: Option<Recording>,
     /// A movie of the output window being recorded (`Command::StartMovie`).
     movie: Option<Recorder>,
+    /// The global beat clock.
+    transport: Transport,
 
     fields_rendered: u64,
     fields_dropped: u64,
@@ -223,6 +228,7 @@ impl Engine {
             captures: Vec::new(),
             recording: None,
             movie: None,
+            transport: Transport::new(DEFAULT_BPM, Instant::now()),
             fields_rendered: 0,
             fields_dropped: 0,
             fields_repeated: 0,
@@ -455,6 +461,8 @@ impl Engine {
                     }
                 }
                 Command::StartMovie { path, codec } => self.start_movie(&path, codec),
+                Command::SetTempo(bpm) => self.transport.set_tempo(bpm, Instant::now()),
+                Command::SetSync(sync) => self.transport.set_sync(sync, Instant::now()),
                 Command::StopMovie => {
                     if let Some(movie) = self.movie.take() {
                         movie.stop(&self.device, false);
@@ -535,8 +543,9 @@ impl Engine {
 
     /// `offline`: recording, so sources wait for their data.
     fn encode_field(&mut self, encoder: &mut wgpu::CommandEncoder, field: u64, offline: bool) {
+        let beat = self.transport.at(self.clock.time_of(field), offline);
         self.runtime
-            .run_field(&self.device, self.queue.raw(), encoder, field, offline);
+            .run_field(&self.device, self.queue.raw(), encoder, field, offline, beat);
         let b = &self.bindings;
         self.blitter.encode(
             self.queue.raw(),
@@ -784,6 +793,7 @@ impl Engine {
         // Never block the engine on the UI; skip this update if it's reading.
         let Ok(mut s) = self.stats.try_lock() else { return };
         s.raster = self.raster;
+        s.tempo = self.transport.status();
         s.field = self.field.unwrap_or(0);
         s.fields_rendered = self.fields_rendered;
         s.fields_dropped = self.fields_dropped;

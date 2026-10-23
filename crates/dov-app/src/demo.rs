@@ -282,7 +282,6 @@ pub fn time() -> Rack {
     set_cv(&rack, slit, "time", 0.5);
     for (lfo, div, phase) in [(lfo_x, 2.0, 0.0), (lfo_y, 3.0, 0.25)] {
         set(&rack, lfo, "mode", 1.0);
-        set(&rack, lfo, "bpm", 120.0);
         set(&rack, lfo, "div", div);
         set(&rack, lfo, "amount", 0.7);
         set(&rack, lfo, "offset", -0.35);

@@ -28,6 +28,13 @@ to cut the movie into splices; Organize and Next pick the splice that plays.
 Patches remember where the file is, so keep movies where they were when you
 saved.
 
+TEMPO
+The tempo bar at the top right sets the tempo (drag, type or Tap) and shows
+the beat. Choose Ableton Link to share tempo and beat with Live (turn Link on
+in Live's settings), or MIDI clock to follow any device's clock (in Live,
+turn Sync on for a MIDI output, such as the IAC Driver). The first time you
+choose Link, macOS asks to let Destruct-O-Vision use the local network.
+
 RECORDING
 Output > Record movie (Cmd+R) records the output window, as it shows, to a
 movie in Documents/Destruct-O-Vision/captures while you play. Cmd+R again

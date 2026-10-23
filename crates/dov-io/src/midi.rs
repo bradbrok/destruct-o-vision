@@ -1,12 +1,13 @@
 //! MIDI input. A worker thread connects to every MIDI source, and to new
 //! ones as they're plugged in. Messages land in a shared queue that any
 //! number of readers drain at their own pace (each MIDI module, once per
-//! field). All MIDI modules share the one connection to each device.
+//! field). All MIDI modules share the one connection to each device, and
+//! the tempo follows MIDI clock through it too.
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use midir::{Ignore, MidiInput, MidiInputConnection, MidiInputPort};
 
@@ -15,6 +16,99 @@ const SCAN: Duration = Duration::from_millis(500);
 /// Messages kept for readers; a reader further behind loses the oldest.
 const QUEUE_LEN: usize = 1024;
 const CLIENT_NAME: &str = "Destruct-O-Vision";
+/// MIDI clock ticks a beat.
+pub const CLOCK_TICKS: i64 = 24;
+/// Ticks the tempo is measured over: two beats.
+const CLOCK_HISTORY: usize = 2 * CLOCK_TICKS as usize + 1;
+/// A pause this long between ticks starts the tempo measurement over.
+const CLOCK_GAP: Duration = Duration::from_secs(1);
+
+/// Where a MIDI clock was at its last tick.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClockReading {
+    /// Ticks from the start of the song at the last tick.
+    pub ticks: i64,
+    /// When the last tick came.
+    pub at: Instant,
+    /// Seconds between ticks, lately.
+    pub period: f64,
+    /// Started (or continued) and not stopped since.
+    pub running: bool,
+}
+
+impl ClockReading {
+    pub fn bpm(&self) -> f64 {
+        60.0 / (self.period * CLOCK_TICKS as f64)
+    }
+}
+
+/// Follows MIDI clock: ticks, start, stop, continue and song position.
+#[derive(Default)]
+struct Clock {
+    /// Where the next tick lands, in ticks from the start of the song.
+    next: i64,
+    /// Where the last one landed.
+    last: Option<i64>,
+    /// When recent ticks came, oldest first.
+    times: VecDeque<Instant>,
+    running: bool,
+    /// A start or continue has come: the song stops when it's stopped.
+    started: bool,
+}
+
+impl Clock {
+    fn message(&mut self, bytes: &[u8], now: Instant) {
+        match *bytes {
+            [0xf8, ..] => {
+                if self
+                    .times
+                    .back()
+                    .is_some_and(|&t| now.duration_since(t) > CLOCK_GAP)
+                {
+                    self.times.clear();
+                }
+                if self.times.len() == CLOCK_HISTORY {
+                    self.times.pop_front();
+                }
+                self.times.push_back(now);
+                // Stopped, the song stays where it is; a clock that never
+                // started just runs.
+                if self.running || !self.started {
+                    self.last = Some(self.next);
+                    self.next += 1;
+                }
+            }
+            // Start: the next tick is the top of the song.
+            [0xfa, ..] => {
+                self.next = 0;
+                self.running = true;
+                self.started = true;
+            }
+            [0xfb, ..] => {
+                self.running = true;
+                self.started = true;
+            }
+            [0xfc, ..] => self.running = false,
+            // Song position, in sixteenths: where the next tick lands.
+            [0xf2, lsb, msb, ..] => self.next = ((i64::from(msb & 0x7f) << 7) | i64::from(lsb & 0x7f)) * 6,
+            _ => {}
+        }
+    }
+
+    fn reading(&self) -> Option<ClockReading> {
+        let (&first, &at) = (self.times.front()?, self.times.back()?);
+        let n = self.times.len();
+        if n < 3 {
+            return None;
+        }
+        Some(ClockReading {
+            ticks: self.last?,
+            at,
+            period: (at - first).as_secs_f64() / (n - 1) as f64,
+            running: self.running || !self.started,
+        })
+    }
+}
 
 /// A channel message. Channels count from 0.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,6 +198,7 @@ struct Queue {
 struct Shared {
     queue: Mutex<Queue>,
     status: Mutex<MidiStatus>,
+    clock: Mutex<Clock>,
 }
 
 impl Shared {
@@ -155,6 +250,7 @@ impl MidiSource {
         let shared = Arc::new(Shared {
             queue: Mutex::default(),
             status: Mutex::new(MidiStatus::Starting),
+            clock: Mutex::default(),
         });
         let (stop, rx) = mpsc::channel();
         let worker = shared.clone();
@@ -173,6 +269,12 @@ impl MidiSource {
             .lock()
             .map(|s| s.clone())
             .unwrap_or(MidiStatus::Starting)
+    }
+
+    /// Where MIDI clock from any device was at its last tick, once a few
+    /// ticks have come.
+    pub fn clock(&self) -> Option<ClockReading> {
+        self.shared.clock.lock().ok()?.reading()
     }
 
     /// Calls `f` with each message received since `cursor` and moves
@@ -238,15 +340,23 @@ fn run(shared: &Arc<Shared>, stop: &mpsc::Receiver<()>) {
 fn connect(shared: &Arc<Shared>, scanner: &MidiInput, port: &MidiInputPort) -> Result<Connection, String> {
     let name = scanner.port_name(port).map_err(|e| e.to_string())?;
     let mut input = MidiInput::new(CLIENT_NAME).map_err(|e| e.to_string())?;
-    input.ignore(Ignore::All);
+    // Clock and song position come through, for the tempo.
+    input.ignore(Ignore::SysexAndActiveSense);
     let shared = shared.clone();
     let connection = input
         .connect(
             port,
             "dov-in",
-            move |_, bytes, _| {
-                if let Some(m) = MidiMessage::parse(bytes) {
-                    shared.push(m);
+            move |_, bytes, _| match bytes.first() {
+                Some(0xf2 | 0xf8 | 0xfa | 0xfb | 0xfc) => {
+                    if let Ok(mut clock) = shared.clock.lock() {
+                        clock.message(bytes, Instant::now());
+                    }
+                }
+                _ => {
+                    if let Some(m) = MidiMessage::parse(bytes) {
+                        shared.push(m);
+                    }
                 }
             },
             (),
@@ -277,6 +387,31 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clock_follows_tempo_start_and_song_position() {
+        let mut clock = Clock::default();
+        let t0 = Instant::now();
+        // 120 BPM: a tick every 1/48 s.
+        let tick = Duration::from_secs_f64(0.5 / 24.0);
+        clock.message(&[0xfa], t0);
+        for i in 0..30 {
+            clock.message(&[0xf8], t0 + tick * i);
+        }
+        let r = clock.reading().unwrap();
+        assert_eq!(r.ticks, 29, "the first tick after Start is the top");
+        assert!((r.bpm() - 120.0).abs() < 1e-4, "{}", r.bpm());
+        assert!(r.running);
+        // Stop, then continue from bar 3 (32 sixteenths in).
+        clock.message(&[0xfc], t0 + tick * 30);
+        assert!(!clock.reading().unwrap().running);
+        clock.message(&[0xf2, 32, 0], t0 + tick * 31);
+        clock.message(&[0xfb], t0 + tick * 31);
+        clock.message(&[0xf8], t0 + tick * 32);
+        let r = clock.reading().unwrap();
+        assert_eq!(r.ticks, 32 * 6);
+        assert!(r.running);
+    }
 
     #[test]
     fn parses_channel_messages() {
@@ -328,6 +463,7 @@ mod tests {
             shared: Arc::new(Shared {
                 queue: Mutex::default(),
                 status: Mutex::new(MidiStatus::Starting),
+                clock: Mutex::default(),
             }),
             stop,
         }

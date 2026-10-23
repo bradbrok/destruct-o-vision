@@ -23,6 +23,7 @@ use crate::codegen::{
 use crate::gpu::{GpuQueue, SIGNAL_FORMAT};
 use crate::graph::{self, PatchSnapshot, Schedule, SnapshotModule, Source};
 use crate::text::{self, Fonts};
+use crate::transport::Beat;
 
 /// Storage format of composite signals.
 const COMPOSITE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
@@ -1193,6 +1194,7 @@ impl Runtime {
         encoder: &mut wgpu::CommandEncoder,
         field: u64,
         offline: bool,
+        beat: Beat,
     ) {
         let advanced = self.last_field.map_or(0, |l| field.saturating_sub(l));
         self.last_field = Some(field);
@@ -1210,6 +1212,8 @@ impl Runtime {
             field,
             advanced,
             offline,
+            beats: beat.beats,
+            bpm: beat.bpm,
         };
         for i in self.schedule.control.clone() {
             self.run_behavior(i, &ctx);

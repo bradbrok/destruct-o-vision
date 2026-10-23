@@ -105,7 +105,7 @@ static VCO: ModuleType = ModuleType {
         name: "VCO",
         category: Category::Source,
         description: "Video oscillator in raster time. Multiples of f_H make bars, of f_V bands; \
-                      detune to slant and drift. Or set it in Hz, or in BPM on the beat grid. \
+                      detune to slant and drift. Or set it in Hz, or as a note value on the global tempo. \
                       Phase CV is video-rate phase modulation.",
         inputs: &[],
         outputs: &[PortDesc::new("out", "Out", MONO)],
@@ -121,7 +121,6 @@ static VCO: ModuleType = ModuleType {
                 .exp()
                 .unit("Hz")
                 .control_cv(),
-            ParamDesc::knob("bpm", "BPM", 20.0, 300.0, 120.0).unit("BPM"),
             ParamDesc::choice("div", "Note", &DIVISIONS).default_choice(4),
         ],
         screen: false,
@@ -185,8 +184,9 @@ static LFO: ModuleType = ModuleType {
         id: "dov.lfo",
         name: "LFO",
         category: Category::Control,
-        description: "Control oscillator, evaluated once per field. Rate in Hz, or BPM with a \
-                      note value on the shared beat grid. Trig fires at the start of each cycle.",
+        description: "Control oscillator, evaluated once per field. Rate in Hz, or BPM: a note \
+                      value on the global tempo, in step with every other module on it. Trig \
+                      fires at the start of each cycle.",
         inputs: &[],
         outputs: &[
             PortDesc::new("out", "Out", CONTROL),
@@ -205,9 +205,6 @@ static LFO: ModuleType = ModuleType {
             ParamDesc::knob("amount", "Amount", 0.0, 1.0, 1.0).control_cv(),
             ParamDesc::knob("offset", "Offset", -1.0, 1.0, 0.0),
             ParamDesc::choice("mode", "Mode", &["Hz", "BPM"]),
-            ParamDesc::knob("bpm", "BPM", 20.0, 300.0, 120.0)
-                .unit("BPM")
-                .control_cv(),
             ParamDesc::choice("div", "Note", &DIVISIONS).default_choice(4),
             ParamDesc::knob("phase", "Phase", 0.0, 1.0, 0.0),
         ],
@@ -496,7 +493,6 @@ static MOVIE: ModuleType = ModuleType {
                 .unit("fps")
                 .control_cv(),
             ParamDesc::choice("sync", "Sync", &["Free", "BPM"]),
-            ParamDesc::knob("bpm", "BPM", 20.0, 300.0, 120.0).unit("BPM"),
             ParamDesc::choice("length", "Length", &DIVISIONS).default_choice(2),
             ParamDesc::choice("fit", "Fit", &["Fill", "Fit", "Stretch"]),
         ],

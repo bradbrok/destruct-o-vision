@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use dov_core::{ModuleId, RasterStd};
-use dov_engine::{EngineStats, IntervalSummary};
+use dov_engine::{EngineStats, IntervalSummary, TempoSync};
 use egui::load::SizedTexture;
 use egui::{Color32, Key, KeyboardShortcut, Modifiers, Stroke, Ui};
 
@@ -43,6 +43,9 @@ pub enum UiAction {
     /// Record the output window to a movie, or stop.
     StartMovie(dov_io::Codec),
     StopMovie,
+    /// The global tempo, in beats a minute.
+    SetTempo(f64),
+    SetSync(TempoSync),
     NewPatch,
     LoadShowcase,
     LoadDemo,
@@ -90,7 +93,16 @@ pub struct AppUi {
     pub rack_view: RackView,
     /// Name being typed in the Save As dialog.
     pub save_as: Option<String>,
+    /// The tempo being dragged or typed, until it's let go.
+    pub tempo_edit: Option<f64>,
+    /// Recent taps of Tap, for tap tempo.
+    pub taps: Vec<std::time::Instant>,
 }
+
+/// Taps further apart than this start a new tempo.
+const TAP_GAP: std::time::Duration = std::time::Duration::from_secs(2);
+/// Taps the tempo is averaged over.
+const TAPS: usize = 5;
 
 impl AppUi {
     /// Draws the window. Returns the module output to probe.
@@ -360,7 +372,94 @@ impl AppUi {
                     }
                 }
             });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                self.tempo_bar(ui, rack, f, actions);
+            });
         });
+    }
+
+    /// The global tempo: where it comes from, the beat, the tempo itself and
+    /// Tap, right to left.
+    fn tempo_bar(&mut self, ui: &mut Ui, rack: &Rack, f: &FrameData, actions: &mut Vec<UiAction>) {
+        let tempo = f.stats.tempo;
+        match tempo.sync {
+            TempoSync::Internal => {}
+            TempoSync::Link => {
+                ui.weak(match tempo.peers {
+                    0 => "no peers".to_string(),
+                    1 => "1 peer".to_string(),
+                    n => format!("{n} peers"),
+                });
+            }
+            TempoSync::MidiClock => {
+                ui.weak(if tempo.receiving {
+                    "receiving"
+                } else {
+                    "waiting for clock"
+                });
+            }
+        }
+        let name = |s: TempoSync| match s {
+            TempoSync::Internal => "Internal",
+            TempoSync::Link => "Ableton Link",
+            TempoSync::MidiClock => "MIDI clock",
+        };
+        egui::ComboBox::from_id_salt("tempo sync")
+            .width(110.0)
+            .selected_text(name(tempo.sync))
+            .show_ui(ui, |ui| {
+                for sync in [TempoSync::Internal, TempoSync::Link, TempoSync::MidiClock] {
+                    if ui.selectable_label(tempo.sync == sync, name(sync)).clicked() && tempo.sync != sync {
+                        actions.push(UiAction::SetSync(sync));
+                    }
+                }
+            })
+            .response
+            .on_hover_text(
+                "Where the tempo comes from: this patch, an Ableton Link session (Live, or any Link app \
+                 on this Mac or the network), or MIDI clock from any device",
+            );
+        beat_lights(ui, tempo.beats);
+
+        // MIDI clock sets the tempo; otherwise it's ours (and Link's).
+        let editable = tempo.sync != TempoSync::MidiClock;
+        let shown = match tempo.sync {
+            TempoSync::Internal => rack.tempo(),
+            _ => tempo.bpm,
+        };
+        let mut bpm = self.tempo_edit.unwrap_or(shown);
+        let drag = ui.add_enabled(
+            editable,
+            egui::DragValue::new(&mut bpm)
+                .range(20.0..=300.0)
+                .speed(0.1)
+                .fixed_decimals(1)
+                .suffix(" BPM"),
+        );
+        if drag.changed() {
+            actions.push(UiAction::SetTempo(bpm));
+        }
+        self.tempo_edit = (drag.dragged() || drag.has_focus()).then_some(bpm);
+
+        let tap = ui
+            .add_enabled(editable, egui::Button::new("Tap"))
+            .on_hover_text("Tap the beat to set the tempo");
+        if tap.clicked() {
+            let now = std::time::Instant::now();
+            if self.taps.last().is_some_and(|&t| now - t > TAP_GAP) {
+                self.taps.clear();
+            }
+            self.taps.push(now);
+            if self.taps.len() > TAPS {
+                self.taps.remove(0);
+            }
+            if let (Some(&first), Some(&last)) = (self.taps.first(), self.taps.last())
+                && self.taps.len() > 1
+            {
+                let beat = (last - first).as_secs_f64() / (self.taps.len() - 1) as f64;
+                actions.push(UiAction::SetTempo(((60.0 / beat) * 10.0).round() / 10.0));
+            }
+        }
     }
 
     fn monitor_panel(&mut self, ui: &mut Ui, f: &FrameData) {
@@ -519,6 +618,30 @@ fn status_line(ui: &mut Ui, rack: &Rack, f: &FrameData) {
             ),
         };
     });
+}
+
+/// Four lights for the beats of the bar: the one on is lit, the first of
+/// the bar in a color of its own.
+fn beat_lights(ui: &mut Ui, beats: f64) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(52.0, 12.0), egui::Sense::hover());
+    let on = beats.rem_euclid(4.0).floor() as usize;
+    // Bright at the start of the beat, fading through it.
+    let fade = 1.0 - beats.rem_euclid(1.0) as f32 * 0.6;
+    // Laid out left to right, though the bar around them runs right to left.
+    for k in 0..4 {
+        let center = egui::pos2(rect.left() + 6.0 + k as f32 * 13.0, rect.center().y);
+        let lit = if k == 0 {
+            Color32::from_rgb(255, 170, 60)
+        } else {
+            Color32::from_rgb(120, 220, 140)
+        };
+        let color = if k == on {
+            lit.gamma_multiply(fade)
+        } else {
+            Color32::from_gray(60)
+        };
+        ui.painter().circle_filled(center, 4.0, color);
+    }
 }
 
 /// Minutes and seconds.

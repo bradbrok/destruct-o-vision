@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use dov_io::{Frame, Movie, MovieStatus, Order, Want};
 
-use crate::behaviors::beat_hz;
+use crate::behaviors::{beat_hz, cycles_per_beat};
 use crate::{Behavior, FieldCtx, FieldIo};
 
 // Params, in the order `library::MOVIE` declares them. The file is the
@@ -23,8 +23,7 @@ const MODE: usize = 5;
 const POSITION: usize = 6;
 const FPS: usize = 7;
 const SYNC: usize = 8;
-const BPM: usize = 9;
-const LENGTH: usize = 10;
+const LENGTH: usize = 9;
 
 // Inputs and outputs.
 const RESTART: usize = 0;
@@ -145,7 +144,7 @@ impl Behavior for MoviePlayer {
             .splicer
             .pick(io.param(ORGANIZE), io.inputs[NEXT] > 0.5, starts.len());
         let bounds = (starts[splice], starts.get(splice + 1).copied().unwrap_or(frames));
-        let controls = Controls::read(io, frames, splice, bounds);
+        let controls = Controls::read(ctx, io, frames, splice, bounds);
         let step = self
             .transport
             .step(&controls, info.fps, ctx.elapsed_seconds(), ctx.seconds());
@@ -276,8 +275,8 @@ struct Controls {
     position: f64,
     /// Pictures per second at most.
     fps: f64,
-    /// Loops per second when locked to the beat grid.
-    beat_hz: Option<f64>,
+    /// Locked to the beat clock: how far it has gone, and how fast.
+    beat: Option<Beat>,
     restart: bool,
     /// The frame the editor holds the playhead on.
     cue: Option<u32>,
@@ -286,7 +285,7 @@ struct Controls {
 impl Controls {
     /// The settings for splice `splice`, which runs from frame `bounds.0`
     /// up to `bounds.1`.
-    fn read(io: &FieldIo, frames: u32, splice: usize, bounds: (u32, u32)) -> Self {
+    fn read(ctx: &FieldCtx, io: &FieldIo, frames: u32, splice: usize, bounds: (u32, u32)) -> Self {
         let percent = |i: usize| f64::from(io.param(i) / 100.0).clamp(0.0, 1.0);
         let (first, last) = loop_frames(io.param(IN), io.param(OUT), bounds);
         Self {
@@ -302,11 +301,23 @@ impl Controls {
             scrub: io.choice(MODE) == 1,
             position: percent(POSITION),
             fps: f64::from(io.param(FPS)).max(0.01),
-            beat_hz: (io.choice(SYNC) == 1).then(|| beat_hz(io.param(BPM), io.choice(LENGTH))),
+            beat: (io.choice(SYNC) == 1).then(|| Beat {
+                loops: ctx.beats * cycles_per_beat(io.choice(LENGTH)),
+                hz: beat_hz(ctx.bpm, io.choice(LENGTH)),
+            }),
             restart: io.inputs[RESTART] > 0.5,
             cue: io.params.cue().map(|f| (f.max(0.0) as u32).min(frames - 1)),
         }
     }
+}
+
+/// A loop locked to the beat clock.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Beat {
+    /// Loops the clock has counted, one per note of the loop's length.
+    loops: f64,
+    /// Loops a second at the tempo.
+    hz: f64,
 }
 
 /// What the transport did this field.
@@ -390,11 +401,11 @@ impl Transport {
         }
 
         let mut forward = !backward;
-        match (c.scrub, c.beat_hz, c.mode) {
+        match (c.scrub, c.beat, c.mode) {
             (true, _, _) => self.pos = a + c.position * len,
-            (false, Some(hz), LoopMode::Loop | LoopMode::Bounce) => {
-                // On the beat grid: the loop's phase comes from the clock.
-                let phase = seconds * hz * c.speed + c.position;
+            (false, Some(beat), LoopMode::Loop | LoopMode::Bounce) => {
+                // On the beat: the loop's phase comes from the beat clock.
+                let phase = beat.loops * c.speed + c.position;
                 let cycle = phase.floor() as i64;
                 end = self.cycle.is_some_and(|last| last != cycle);
                 self.cycle = Some(cycle);
@@ -411,8 +422,8 @@ impl Transport {
             (false, beat, mode) => {
                 self.cycle = None;
                 let rate = match beat {
-                    // Once on the grid's tempo: the loop lasts one note.
-                    Some(hz) => c.speed * len * hz,
+                    // Once at the tempo: the loop lasts one note.
+                    Some(beat) => c.speed * len * beat.hz,
                     None => c.speed * movie_fps,
                 };
                 forward = (rate >= 0.0) != self.turned;
@@ -495,7 +506,7 @@ mod tests {
             scrub: false,
             position: 0.0,
             fps: 60.0,
-            beat_hz: None,
+            beat: None,
             restart: false,
             cue: None,
         }
@@ -699,8 +710,13 @@ mod tests {
         let mut t = Transport::default();
         let mut c = controls(0, 59, LoopMode::Loop, 1.0);
         // One loop per beat at 120 BPM: half a second.
-        c.beat_hz = Some(2.0);
-        let at = |t: &mut Transport, s: f64| t.step(&c, 30.0, FIELD, s);
+        let mut at = |t: &mut Transport, s: f64| {
+            c.beat = Some(Beat {
+                loops: s * 2.0,
+                hz: 2.0,
+            });
+            t.step(&c, 30.0, FIELD, s)
+        };
         assert_eq!(at(&mut t, 0.0).frame, 0);
         assert_eq!(at(&mut t, 0.25).frame, 30);
         let wrapped = at(&mut t, 0.5);

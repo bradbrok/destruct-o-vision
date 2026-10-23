@@ -62,8 +62,7 @@ pub fn choice_value(desc: &ModuleDesc, slots: &[f32], inputs: &[f32], i: usize) 
 }
 
 const VCO_HZ: usize = 7;
-const VCO_BPM: usize = 8;
-const VCO_DIV: usize = 9;
+const VCO_DIV: usize = 8;
 
 /// Raster-locked oscillator: keeps phase in f64 and hands the shader the
 /// fractional per-line and per-sample increments (see `dov_core::phase`).
@@ -81,12 +80,14 @@ impl Behavior for Vco {
             0 => multiple * raster.line_rate_hz() + detune,
             1 => multiple * raster.field_rate_hz() + detune,
             2 => f64::from(io.param(VCO_HZ)) + detune,
-            _ => beat_hz(io.param(VCO_BPM), io.choice(VCO_DIV)) + detune,
+            _ => beat_hz(ctx.bpm, io.choice(VCO_DIV)) + detune,
         };
         if io.choice(0) == 3 {
-            // On the engine's beat grid, like a tempo-synced LFO.
+            // On the global beat clock, like a tempo-synced LFO.
             self.acc = PhaseAcc::default();
-            self.acc.advance(freq, ctx.seconds());
+            self.acc
+                .advance(1.0, ctx.beats * cycles_per_beat(io.choice(VCO_DIV)));
+            self.acc.advance(detune, ctx.seconds());
         } else {
             self.acc.advance(freq, ctx.elapsed_seconds());
         }
@@ -163,8 +164,8 @@ impl Behavior for Cable {
     }
 }
 
-/// Control-rate LFO. In BPM mode its phase comes from the engine's clock,
-/// so every LFO at the same tempo stays on the same beat grid.
+/// Control-rate LFO. In BPM mode its phase comes from the global beat
+/// clock, so every tempo-synced LFO stays on the beat.
 #[derive(Default)]
 pub(crate) struct Lfo {
     /// Cycles run so far (Hz mode accumulates; BPM mode recomputes).
@@ -189,7 +190,7 @@ impl Behavior for Lfo {
         let before = self.cycles;
         self.cycles = match io.choice(LFO_MODE) {
             0 => before + f64::from(io.param(0).max(0.0)) * ctx.elapsed_seconds(),
-            _ => ctx.seconds() * beat_hz(io.param(LFO_BPM), io.choice(LFO_DIV)),
+            _ => ctx.beats * cycles_per_beat(io.choice(LFO_DIV)),
         };
         let total = self.cycles + f64::from(io.param(LFO_PHASE));
         let new_cycle = !self.started || total.floor() != (before + f64::from(io.param(LFO_PHASE))).floor();
@@ -220,9 +221,8 @@ impl Behavior for Lfo {
 }
 
 const LFO_MODE: usize = 4;
-const LFO_BPM: usize = 5;
-const LFO_DIV: usize = 6;
-const LFO_PHASE: usize = 7;
+const LFO_DIV: usize = 5;
+const LFO_PHASE: usize = 6;
 
 /// Note values for tempo-synced rates, as cycles per beat (a beat is a quarter note).
 pub(crate) const DIVISION_CYCLES: [f64; 12] = [
@@ -240,10 +240,14 @@ pub(crate) const DIVISION_CYCLES: [f64; 12] = [
     6.0,
 ];
 
+/// Cycles a beat for a note value.
+pub(crate) fn cycles_per_beat(division: u32) -> f64 {
+    DIVISION_CYCLES.get(division as usize).copied().unwrap_or(1.0)
+}
+
 /// Frequency of one cycle per `division` at `bpm`.
-pub(crate) fn beat_hz(bpm: f32, division: u32) -> f64 {
-    let cycles = DIVISION_CYCLES.get(division as usize).copied().unwrap_or(1.0);
-    f64::from(bpm.max(0.0)) / 60.0 * cycles
+pub(crate) fn beat_hz(bpm: f64, division: u32) -> f64 {
+    bpm.max(0.0) / 60.0 * cycles_per_beat(division)
 }
 
 /// Spin for the 3D modules: accumulates the `spin_x` and `spin_y` params
@@ -286,7 +290,18 @@ mod tests {
 
     /// Runs a module's behavior for `fields` fields starting at `first`,
     /// returning its control outputs (and VCO phase terms) for each field.
+    /// The beat clock runs at 120 BPM from field 0.
     fn run(kind: &str, slots: &[(&str, f32)], first: u64, fields: u64) -> Vec<(Vec<f32>, [f32; 4])> {
+        run_at(kind, slots, first, fields, 120.0)
+    }
+
+    fn run_at(
+        kind: &str,
+        slots: &[(&str, f32)],
+        first: u64,
+        fields: u64,
+        bpm: f64,
+    ) -> Vec<(Vec<f32>, [f32; 4])> {
         let ty = find(kind).unwrap();
         let desc = &ty.desc;
         let mut values = desc.default_slots();
@@ -306,6 +321,8 @@ mod tests {
                 field,
                 advanced: u64::from(field > first),
                 offline: false,
+                beats: field as f64 * raster.field_period() * bpm / 60.0,
+                bpm,
             };
             let mut io = FieldIo {
                 desc,
@@ -323,10 +340,10 @@ mod tests {
 
     #[test]
     fn bpm_lfos_share_the_beat_grid() {
-        let slots = [("mode", 1.0), ("bpm", 128.0), ("div", 4.0), ("shape", 2.0)];
+        let slots = [("mode", 1.0), ("div", 4.0), ("shape", 2.0)];
         // One LFO started at field 0, another added 1000 fields later.
-        let early = run("dov.lfo", &slots, 0, 1200);
-        let late = run("dov.lfo", &slots, 1000, 200);
+        let early = run_at("dov.lfo", &slots, 0, 1200, 128.0);
+        let late = run_at("dov.lfo", &slots, 1000, 200, 128.0);
         for (a, b) in early[1001..].iter().zip(&late[1..]) {
             assert!((a.0[0] - b.0[0]).abs() < 1e-5, "{} vs {}", a.0[0], b.0[0]);
         }
@@ -355,14 +372,9 @@ mod tests {
         let out = run("dov.vco", &[("range", 2.0), ("hz", 1_000_000.0)], 0, 2);
         let expected = (1_000_000.0 / raster.sample_rate_hz) as f32;
         assert!((out[1].1[2] - expected).abs() < 1e-6);
-        // BPM mode: the phase at a field start comes from the beat grid.
+        // BPM mode: the phase at a field start comes from the beat clock.
         let field = 900;
-        let out = run(
-            "dov.vco",
-            &[("range", 3.0), ("bpm", 90.0), ("div", 4.0)],
-            field,
-            1,
-        );
+        let out = run_at("dov.vco", &[("range", 3.0), ("div", 4.0)], field, 1, 90.0);
         let t = field as f64 * raster.field_period()
             + raster.first_active_line_offset(field) * raster.line_period()
             + f64::from(raster.active_start_sample) * raster.sample_period();

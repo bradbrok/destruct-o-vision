@@ -63,6 +63,12 @@ pub struct FieldCtx<'a> {
     /// Every field is rendered however long it takes (recording), so
     /// sources wait for their data rather than skip it.
     pub offline: bool,
+    /// The global beat clock at the start of this field: quarter-note
+    /// beats, with bars every four, as the patch's tempo (or Link, or MIDI
+    /// clock) has counted them.
+    pub beats: f64,
+    /// The tempo, in beats a minute.
+    pub bpm: f64,
 }
 
 impl FieldCtx<'_> {

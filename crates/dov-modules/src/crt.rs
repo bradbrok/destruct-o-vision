@@ -130,6 +130,8 @@ mod tests {
                     field,
                     advanced: u64::from(field > 0),
                     offline: false,
+                    beats: 0.0,
+                    bpm: 120.0,
                 };
                 let mut io = FieldIo {
                     desc,

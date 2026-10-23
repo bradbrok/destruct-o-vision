@@ -45,6 +45,31 @@ pub struct Rack {
     /// Packages the loaded patch said it needs, kept for modules that
     /// aren't installed so saving doesn't forget them.
     requires: BTreeMap<String, String>,
+    /// The global tempo, if the patch sets one.
+    tempo: Option<f64>,
+}
+
+/// The tempo of a patch that doesn't set one.
+pub const DEFAULT_TEMPO: f64 = 120.0;
+
+/// Modules that had a BPM knob of their own before the global tempo, with
+/// the switch that put them on the beat and its setting for that.
+const OWN_TEMPO: [(&str, &str, f32); 3] = [
+    ("dov.vco", "range", 3.0),
+    ("dov.lfo", "mode", 1.0),
+    ("dov.movie", "sync", 1.0),
+];
+
+/// A patch's tempo: its own, or for a patch from before the global tempo,
+/// the first tempo a module was synced to.
+fn tempo_of(patch: &Patch) -> Option<f64> {
+    patch.tempo.or_else(|| {
+        patch.modules.iter().find_map(|m| {
+            let (_, switch, on) = OWN_TEMPO.iter().find(|(kind, ..)| *kind == m.kind)?;
+            let synced = m.params.get(*switch).is_some_and(|v| (v - on).abs() < 0.5);
+            synced.then(|| m.params.get("bpm").map(|&b| f64::from(b)))?
+        })
+    })
 }
 
 /// Output's old display settings. Patches from before the CRT module chose
@@ -53,6 +78,12 @@ pub struct Rack {
 const OLD_DISPLAY: [&str; 6] = ["display", "mask_type", "mask", "scanlines", "glow", "curvature"];
 
 fn migrate(m: &ModuleState) -> Cow<'_, ModuleState> {
+    // The global tempo replaced modules' own BPM knobs (see `tempo_of`).
+    if OWN_TEMPO.iter().any(|(kind, ..)| *kind == m.kind) && m.params.contains_key("bpm") {
+        let mut m = m.clone();
+        m.params.retain(|k, _| k != "bpm" && k != "bpm_cv");
+        return Cow::Owned(m);
+    }
     if m.kind != "dov.output" || !m.params.keys().any(|k| OLD_DISPLAY.contains(&k.as_str())) {
         return Cow::Borrowed(m);
     }
@@ -71,7 +102,20 @@ impl Rack {
     pub fn from_patch(patch: &Patch) -> (Self, Vec<String>) {
         let mut rack = Self::default();
         let warnings = rack.load(patch);
+        rack.tempo = tempo_of(patch);
         (rack, warnings)
+    }
+
+    /// The global tempo, in beats a minute.
+    pub fn tempo(&self) -> f64 {
+        self.tempo.unwrap_or(DEFAULT_TEMPO)
+    }
+
+    pub fn set_tempo(&mut self, bpm: f64) {
+        if self.tempo != Some(bpm) {
+            self.tempo = Some(bpm);
+            self.modified = true;
+        }
     }
 
     /// Replaces the contents, keeping undo history. Returns problems found.
@@ -123,6 +167,10 @@ impl Rack {
             .iter()
             .filter(|c| {
                 let ok = self.output_index(&c.from).is_some() && self.input_index(&c.to).is_some();
+                // An LFO's own BPM CV went with its BPM knob.
+                if !ok && c.to.port == "bpm_cv" {
+                    return false;
+                }
                 if !ok {
                     warnings.push(format!(
                         "dropped cable {}.{} -> {}.{}",
@@ -172,6 +220,7 @@ impl Rack {
         Patch {
             version: Patch::VERSION,
             raster: None,
+            tempo: self.tempo,
             requires: self.requires(),
             modules,
             cables: self.cables.clone(),
@@ -555,6 +604,32 @@ mod tests {
         assert_eq!(crt.params.get(desc.param_index("glow").unwrap()), 0.45);
         assert_eq!(rack.snapshot().cables.len(), 1, "the cable still reaches it");
         assert_eq!(rack.module(ModuleId(3)).unwrap().ty.desc.id, "dov.output");
+    }
+
+    #[test]
+    fn an_old_patch_takes_its_tempo_from_its_synced_modules() {
+        let patch = Patch::from_ron(
+            r#"(modules: [
+                (id: (1), kind: "dov.lfo", pos: (0, 0), params: {"mode": 0.0, "bpm": 90.0}),
+                (id: (2), kind: "dov.lfo", pos: (0, 8), params: {"mode": 1.0, "bpm": 128.0, "bpm_cv": 0.5}),
+                (id: (3), kind: "dov.vco", pos: (1, 0), params: {"range": 3.0, "bpm": 100.0}),
+            ], cables: [(from: (module: (1), port: "out"), to: (module: (2), port: "bpm_cv"))])"#,
+        )
+        .unwrap();
+        let (rack, warnings) = Rack::from_patch(&patch);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(rack.tempo(), 128.0, "the first module on the beat");
+        assert!(rack.cables.is_empty());
+        let saved = rack.to_patch();
+        assert_eq!(saved.tempo, Some(128.0));
+        assert!(saved.modules.iter().all(|m| !m.params.contains_key("bpm")));
+        // A new patch, and one that sets its own.
+        assert_eq!(Rack::default().tempo(), DEFAULT_TEMPO);
+        let (rack, _) = Rack::from_patch(&Patch {
+            tempo: Some(87.5),
+            ..saved
+        });
+        assert_eq!(rack.tempo(), 87.5);
     }
 
     #[test]

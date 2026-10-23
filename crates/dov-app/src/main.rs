@@ -20,7 +20,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use dov_core::{ModuleId, Patch, RasterStd};
 use dov_engine::capture::Capture;
 use dov_engine::gpu::GpuQueue;
-use dov_engine::{Command, EngineEvent, EngineHandle, IntervalTracker, Previews};
+use dov_engine::{Command, EngineEvent, EngineHandle, IntervalTracker, Previews, TempoSync};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -47,6 +47,7 @@ usage: destructovision [options]
                          or tv[:stage,...], e.g. tv:vcr,cable (Encoder -> stages -> TV)
   --set TYPE:PARAM=VAL   set a param on every module of a type, e.g. dov.vcr:tracking=0.5
   --raster NAME          ntsc | pal | 720p | 1080p (default ntsc)
+  --sync NAME            where the tempo comes from: internal (default) | link | midi
   --ui-load MS           simulated UI work per frame, for pacing tests
   --snapshot-after SECS  save the output and the UI to captures/ after SECS
   --quit-after SECS      log pacing stats and quit after SECS
@@ -67,6 +68,7 @@ struct Options {
     demo: Option<String>,
     sets: Vec<(String, String, f32)>,
     raster: Option<RasterStd>,
+    sync: Option<TempoSync>,
     ui_load_ms: f32,
     snapshot_after: Option<f32>,
     quit_after: Option<f32>,
@@ -103,6 +105,14 @@ impl Options {
                         "720p" => RasterStd::HD720P60,
                         "1080p" => RasterStd::HD1080P60,
                         other => return Err(format!("unknown raster '{other}'")),
+                    })
+                }
+                "--sync" => {
+                    opts.sync = Some(match value()?.as_str() {
+                        "internal" => TempoSync::Internal,
+                        "link" => TempoSync::Link,
+                        "midi" => TempoSync::MidiClock,
+                        other => return Err(format!("unknown sync '{other}'")),
                     })
                 }
                 "--ui-load" => opts.ui_load_ms = secs()?,
@@ -261,6 +271,10 @@ struct AppState {
     movie: Option<(PathBuf, Instant)>,
     /// A `--movie` run: whether it has started and been stopped.
     scripted_movie: (bool, bool),
+    /// Where the tempo comes from (the engine follows), and the tempo last
+    /// sent it.
+    sync: TempoSync,
+    sent_tempo: Option<f64>,
 }
 
 impl AppState {
@@ -385,6 +399,8 @@ impl AppState {
             ui_snapshot: None,
             movie: None,
             scripted_movie: (false, false),
+            sync: TempoSync::Internal,
+            sent_tempo: None,
             ui_captures: Vec::new(),
             modules: user_modules,
             recorded: false,
@@ -409,6 +425,9 @@ impl AppState {
             state.engine.send(Command::DisplayRefresh(hz));
         }
         state.sync_engine();
+        if let Some(sync) = options.sync {
+            state.apply(UiAction::SetSync(sync));
+        }
         if let Some(dir) = &options.record {
             let seconds = if options.record_seconds > 0.0 {
                 options.record_seconds
@@ -451,6 +470,13 @@ impl AppState {
     fn sync_engine(&mut self) {
         if self.rack.take_dirty() {
             self.engine.send(Command::SetPatch(self.rack.snapshot()));
+        }
+        // A patch's own tempo, when it runs on its own: opening one in a
+        // Link session doesn't change everyone's tempo.
+        let tempo = self.rack.tempo();
+        if self.sync == TempoSync::Internal && self.sent_tempo != Some(tempo) {
+            self.engine.send(Command::SetTempo(tempo));
+            self.sent_tempo = Some(tempo);
         }
     }
 
@@ -568,7 +594,8 @@ impl AppState {
         log::info!(
             "pacing: {} | {} modules, {} passes | fields {} rendered, {} dropped, {} repeated | \
              field {:.2}±{:.2} ms | present {:.2}±{:.2} ms [{:.2}–{:.2}] | acquire wait {:.2}±{:.2} ms, \
-             {} occluded | ui frame {:.2} ms [{:.2}–{:.2}] | ui load {} ms",
+             {} occluded | ui frame {:.2} ms [{:.2}–{:.2}] | ui load {} ms | tempo {:.2} BPM, beat {:.2} \
+             ({:?}, {} peers, clock {})",
             s.raster.name,
             s.modules,
             s.passes,
@@ -588,6 +615,11 @@ impl AppState {
             u.min_ms,
             u.max_ms,
             self.ui.load_ms,
+            s.tempo.bpm,
+            s.tempo.beats,
+            s.tempo.sync,
+            s.tempo.peers,
+            if s.tempo.receiving { "in" } else { "none" },
         );
         self.engine.shutdown();
         event_loop.exit();
@@ -684,6 +716,30 @@ impl AppState {
                     self.set_status(format!("Recording to {}", path.display()));
                     self.movie = Some((path, Instant::now()));
                 }
+            }
+            UiAction::SetTempo(bpm) => {
+                self.rack.set_tempo(bpm);
+                self.engine.send(Command::SetTempo(bpm));
+                self.sent_tempo = Some(bpm);
+            }
+            UiAction::SetSync(sync) => {
+                self.engine.send(Command::SetSync(sync));
+                // Back on its own, the patch keeps the tempo it was synced to.
+                if sync == TempoSync::Internal && self.sync != TempoSync::Internal {
+                    let bpm = (self.engine.stats().tempo.bpm * 10.0).round() / 10.0;
+                    if bpm > 0.0 {
+                        self.rack.set_tempo(bpm);
+                    }
+                }
+                self.sync = sync;
+                let message = match sync {
+                    TempoSync::Internal => "Tempo: this patch's own",
+                    TempoSync::Link => "Tempo: Ableton Link. Turn Link on in Live's settings to join",
+                    TempoSync::MidiClock => {
+                        "Tempo: MIDI clock from any device. In Live, turn Sync on for an output"
+                    }
+                };
+                self.set_status(message);
             }
             UiAction::StopMovie => {
                 if self.movie.is_some() {

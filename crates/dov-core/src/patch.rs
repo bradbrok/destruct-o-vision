@@ -50,6 +50,9 @@ pub struct Patch {
     pub version: u32,
     #[serde(default)]
     pub raster: Option<String>,
+    /// Beats a minute of the global beat clock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tempo: Option<f64>,
     /// Packages the patch's modules come from: package id to version.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub requires: BTreeMap<String, String>,
@@ -82,6 +85,7 @@ mod tests {
         let patch = Patch {
             version: Patch::VERSION,
             raster: Some("NTSC 480i".into()),
+            tempo: Some(128.0),
             requires: [("alice.vhs-pack".to_string(), "1.2.0".to_string())].into(),
             modules: vec![ModuleState {
                 id: ModuleId(1),

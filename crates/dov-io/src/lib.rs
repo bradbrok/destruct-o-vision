@@ -5,12 +5,14 @@
 mod access;
 pub mod audio;
 pub mod camera;
+pub mod link;
 pub mod midi;
 pub mod movie;
 pub mod writer;
 
 pub use audio::{AudioCursor, AudioSource, AudioStatus, InputDevice};
 pub use camera::{CameraSource, CameraStatus, Frame};
-pub use midi::{MidiMessage, MidiSource, MidiStatus};
+pub use link::LinkSession;
+pub use midi::{ClockReading, MidiMessage, MidiSource, MidiStatus};
 pub use movie::{Movie, MovieInfo, MovieStatus, Order, Want};
 pub use writer::{Codec, Fill, MovieWriter, Written};
