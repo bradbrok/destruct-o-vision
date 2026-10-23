@@ -13,15 +13,18 @@ mod behaviors;
 mod files;
 mod library;
 mod midi;
+mod movie;
 
 use std::path::PathBuf;
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use dov_core::{ModuleDesc, RasterStd};
+use dov_io::Frame;
 
 pub use behaviors::{FieldIo, choice_value, param_value};
 pub use dov_format::glue::EXTRA_SLOTS;
 pub use files::{Scan, load, load_dir, load_files, load_package, missing};
+pub use movie::{Timeline, loop_frames, splice_starts};
 
 /// Per-field CPU side of a module.
 pub trait Behavior: Send {
@@ -29,6 +32,23 @@ pub trait Behavior: Send {
 
     /// A problem to show the user, such as a device that won't open.
     fn warning(&self) -> Option<String> {
+        None
+    }
+
+    /// A line or two about what the module is doing, for its panel: a
+    /// movie's length and where its loop is.
+    fn note(&self) -> Option<String> {
+        None
+    }
+
+    /// For a [`Kernel::Picture`](dov_core::Kernel::Picture) module: the
+    /// picture to show. The engine uploads it when it's a different one.
+    fn picture(&self) -> Option<Arc<Frame>> {
+        None
+    }
+
+    /// Where a module that plays a movie is in it, for its editor.
+    fn timeline(&self) -> Option<Timeline> {
         None
     }
 }
@@ -39,6 +59,9 @@ pub struct FieldCtx<'a> {
     pub field: u64,
     /// Fields elapsed since the previous call (0 on the first).
     pub advanced: u64,
+    /// Every field is rendered however long it takes (recording), so
+    /// sources wait for their data rather than skip it.
+    pub offline: bool,
 }
 
 impl FieldCtx<'_> {

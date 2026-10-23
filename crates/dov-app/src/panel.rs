@@ -155,13 +155,15 @@ fn art_layout(desc: &ModuleDesc, loaded: &Arc<LoadedArt>) -> Option<PanelLayout>
         });
     }
     for (i, p) in desc.params.iter().enumerate() {
-        let c = center(component_id(Place::Param(p.id)))?;
-        let (element, cell) = if art::is_switch(desc, i) {
-            (Element::Choice { param: i }, cell(c, CHOICE_H, 25.0))
-        } else {
-            (Element::Knob { param: i }, cell(c, KNOB_H, 22.0))
-        };
-        elements.push(Placed { element, cell });
+        if !p.in_editor {
+            let c = center(component_id(Place::Param(p.id)))?;
+            let (element, cell) = if art::is_switch(desc, i) {
+                (Element::Choice { param: i }, cell(c, CHOICE_H, 25.0))
+            } else {
+                (Element::Knob { param: i }, cell(c, KNOB_H, 22.0))
+            };
+            elements.push(Placed { element, cell });
+        }
         if let Some((input, atten)) = desc.cv_slot(i) {
             elements.push(Placed {
                 element: Element::Cv {
@@ -201,6 +203,22 @@ fn art_layout(desc: &ModuleDesc, loaded: &Arc<LoadedArt>) -> Option<PanelLayout>
     })
 }
 
+/// Choices with more options than this are picked from a list.
+const LIST_OPTIONS: usize = 8;
+
+/// Whether a choice is picked from a list rather than clicked through: one
+/// with many options, or one whose options run on into a live list.
+pub fn picks_from_list(p: &ParamDesc) -> bool {
+    p.live.is_some() || matches!(p.kind, ParamKind::Choice { options, .. } if options.len() > LIST_OPTIONS)
+}
+
+/// Whether a choice gets a row of its own, across the panel: a long list of
+/// long names, such as blend modes.
+fn is_wide(p: &ParamDesc) -> bool {
+    matches!(p.kind, ParamKind::Choice { options, .. }
+        if options.len() > LIST_OPTIONS && options.iter().any(|o| o.chars().count() > 8))
+}
+
 /// Screen widths to try, largest first.
 const SCREEN_WIDTHS: [f32; 3] = [168.0, 120.0, 90.0];
 
@@ -216,11 +234,14 @@ enum Section {
 /// (CV inputs, inputs, then outputs, which share the last input row when
 /// they fit).
 fn rows(desc: &ModuleDesc, cols: usize) -> Vec<(Section, Vec<Element>)> {
+    let mut wide = Vec::new();
     let mut choices = Vec::new();
     let mut knobs = Vec::new();
     let mut ins = Vec::new();
     for (i, p) in desc.params.iter().enumerate() {
         match p.kind {
+            _ if p.in_editor => {}
+            _ if is_wide(p) => wide.push(Element::Choice { param: i }),
             ParamKind::Choice { .. } => choices.push(Element::Choice { param: i }),
             ParamKind::Knob { .. } => knobs.push(Element::Knob { param: i }),
         }
@@ -248,6 +269,7 @@ fn rows(desc: &ModuleDesc, cols: usize) -> Vec<(Section, Vec<Element>)> {
     if desc.text.is_some() {
         rows.push((Section::Text, vec![Element::Text]));
     }
+    rows.extend(wide.into_iter().map(|e| (Section::Choices, vec![e])));
     for (section, items) in [(Section::Choices, choices), (Section::Knobs, knobs)] {
         rows.extend(items.chunks(cols).map(|c| (section, c.to_vec())));
     }
@@ -287,7 +309,12 @@ fn place(desc: &ModuleDesc, cols: usize, screen_w: f32) -> PanelLayout {
         let x0 = (width - row.len() as f32 * CELL_W) / 2.0;
         for (c, element) in row.into_iter().enumerate() {
             let cell = match element {
-                Element::Text => Rect::from_min_size(pos2(8.0, y), vec2(width - 16.0, h)),
+                Element::Choice { param } if !is_wide(&desc.params[param]) => {
+                    Rect::from_min_size(pos2(x0 + c as f32 * CELL_W, y), vec2(CELL_W, h))
+                }
+                Element::Text | Element::Choice { .. } => {
+                    Rect::from_min_size(pos2(8.0, y), vec2(width - 16.0, h))
+                }
                 _ => Rect::from_min_size(pos2(x0 + c as f32 * CELL_W, y), vec2(CELL_W, h)),
             };
             if matches!(element, Element::Output { .. }) {
@@ -575,13 +602,20 @@ pub fn draw_switch(painter: &Painter, rect: Rect, label: &str, value: &str, hot:
         Stroke::new(1.0, Color32::from_gray(70)),
         StrokeKind::Inside,
     );
-    painter.text(
-        body.center(),
-        Align2::CENTER_CENTER,
-        value,
-        FontId::proportional(11.0),
-        Color32::from_rgb(255, 200, 120),
-    );
+    // Smaller type for a long value, and cut short if even that won't fit.
+    let color = Color32::from_rgb(255, 200, 120);
+    let room = body.width() - 6.0;
+    let galley = [11.0, 10.0, 9.0]
+        .into_iter()
+        .map(|size| painter.layout_no_wrap(value.to_owned(), FontId::proportional(size), color))
+        .find(|g| g.size().x <= room)
+        .unwrap_or_else(|| {
+            let mut job =
+                egui::text::LayoutJob::simple_singleline(value.to_owned(), FontId::proportional(9.0), color);
+            job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+            painter.layout_job(job)
+        });
+    painter.galley(body.center() - galley.size() / 2.0, galley, color);
 }
 
 /// A box naming something picked from a list, such as a device: the name,
@@ -650,6 +684,35 @@ mod tests {
                 assert!(p.cell.max.x <= l.hp as f32 * HP + 0.5, "{}", m.desc.id);
             }
         }
+    }
+
+    #[test]
+    fn blend_modes_get_a_row_of_their_own() {
+        let cell_of = |id: &str, param: &str| {
+            let desc = &dov_modules::find(id).unwrap().desc;
+            let k = desc.param_index(param).unwrap();
+            let l = layout(desc);
+            let placed = l
+                .elements
+                .iter()
+                .find(|p| matches!(p.element, Element::Choice { param } if param == k));
+            (
+                placed.unwrap().cell,
+                l.hp as f32 * HP,
+                picks_from_list(&desc.params[k]),
+            )
+        };
+        let (mode, width, listed) = cell_of("dov.blend", "mode");
+        assert!(listed, "27 modes are picked from a list");
+        assert!(
+            mode.width() > width - 20.0,
+            "across the panel: {mode:?} of {width}"
+        );
+        let (note, _, listed) = cell_of("dov.lfo", "div");
+        assert!(listed, "so are 12 note values");
+        assert_eq!(note.width(), CELL_W, "but short names keep a cell");
+        let (_, _, listed) = cell_of("dov.movie", "loop");
+        assert!(!listed, "a few options are clicked through");
     }
 
     #[test]

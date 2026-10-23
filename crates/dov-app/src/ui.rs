@@ -54,6 +54,8 @@ pub enum UiAction {
     Open(PathBuf),
     Save,
     SaveAs(String),
+    /// Ask for a movie file for this Movie module.
+    ChooseMovie(ModuleId),
 }
 
 pub struct FrameData<'a> {
@@ -102,6 +104,9 @@ impl AppUi {
         });
         let mut probe = None;
         egui::CentralPanel::no_frame().show(ui, |ui| probe = self.rack_view.show(ui, rack, &f.probe));
+        if let Some(id) = self.rack_view.choose_movie.take() {
+            actions.push(UiAction::ChooseMovie(id));
+        }
         self.save_as_window(ui, actions);
         probe
     }

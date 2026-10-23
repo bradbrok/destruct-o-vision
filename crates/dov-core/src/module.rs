@@ -110,6 +110,9 @@ pub struct ParamDesc {
     pub cv: Option<PortKind>,
     /// For a choice: more options, found at run time, after the fixed ones.
     pub live: Option<Live>,
+    /// Set in the module's editor window instead of with a knob on the
+    /// panel (a movie's In and Out). Its CV jack stays on the panel.
+    pub in_editor: bool,
 }
 
 /// Options that depend on what's connected, so the app lists them at run
@@ -122,6 +125,8 @@ pub enum Live {
     /// The input channels of the audio device named in the module's text.
     /// On a choice: one option per channel, numbered from 1.
     AudioChannels,
+    /// A movie file. On a text field: the file's path, or empty for none.
+    MovieFile,
 }
 
 impl ParamDesc {
@@ -138,6 +143,7 @@ impl ParamDesc {
             },
             cv: None,
             live: None,
+            in_editor: false,
         }
     }
 
@@ -148,6 +154,7 @@ impl ParamDesc {
             kind: ParamKind::Choice { options, default: 0 },
             cv: None,
             live: None,
+            in_editor: false,
         }
     }
 
@@ -191,6 +198,12 @@ impl ParamDesc {
         self
     }
 
+    /// Moves the param off the panel into the module's editor window.
+    pub const fn in_editor(mut self) -> Self {
+        self.in_editor = true;
+        self
+    }
+
     /// The name of option `index` of a choice: a fixed option, or past
     /// those, an entry of its live list.
     pub fn option_name(&self, index: usize) -> Option<Cow<'static, str>> {
@@ -200,7 +213,7 @@ impl ParamDesc {
         match (options.get(index), self.live) {
             (Some(o), _) => Some(Cow::Borrowed(*o)),
             (None, Some(Live::AudioChannels)) => Some(Cow::Owned((index - options.len() + 1).to_string())),
-            (None, Some(Live::AudioInputs) | None) => None,
+            (None, Some(Live::AudioInputs | Live::MovieFile) | None) => None,
         }
     }
 
@@ -234,6 +247,9 @@ pub enum Kernel {
     Feedback,
     /// A live camera scaled into the raster. The engine owns the device.
     Camera,
+    /// A picture the module's behavior supplies (a movie frame), scaled
+    /// into the raster by its `fit` choice: fill, fit or stretch.
+    Picture,
     /// A composite-domain stage implemented by the engine.
     Composite(CompositeOp),
     /// CPU only, once per field. Outputs are control-rate.
@@ -433,6 +449,12 @@ pub struct ParamBank {
     text: Mutex<String>,
     /// Bumped on every text change, so the engine knows to re-render.
     text_version: AtomicU64,
+    /// Points on the module's timeline in seconds, in order: a movie's
+    /// splices.
+    marks: Mutex<Vec<f64>>,
+    /// The frame the user is holding the module's playhead on, or NaN.
+    /// Never saved.
+    cue: AtomicF32,
 }
 
 impl ParamBank {
@@ -441,6 +463,8 @@ impl ParamBank {
             values: values.iter().map(|&v| AtomicF32::new(v)).collect(),
             text: Mutex::default(),
             text_version: AtomicU64::new(0),
+            marks: Mutex::default(),
+            cue: AtomicF32::new(f32::NAN),
         }
     }
 
@@ -485,6 +509,27 @@ impl ParamBank {
 
     pub fn text_version(&self) -> u64 {
         self.text_version.load(Ordering::Acquire)
+    }
+
+    pub fn marks(&self) -> Vec<f64> {
+        self.marks.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Sets the marks, putting them in order.
+    pub fn set_marks(&self, mut marks: Vec<f64>) {
+        marks.retain(|m| m.is_finite());
+        marks.sort_by(f64::total_cmp);
+        marks.dedup();
+        *self.marks.lock().unwrap_or_else(|e| e.into_inner()) = marks;
+    }
+
+    /// The frame the user is holding the playhead on, while they hold it.
+    pub fn cue(&self) -> Option<f32> {
+        Some(self.cue.load()).filter(|f| !f.is_nan())
+    }
+
+    pub fn set_cue(&self, frame: Option<f32>) {
+        self.cue.store(frame.unwrap_or(f32::NAN));
     }
 }
 

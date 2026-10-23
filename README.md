@@ -14,20 +14,24 @@ The showcase patch, which the app opens with, works like this:
 
 The tearing, noise bars and soft color all come from the emulated signal, not from a filter. [Watch the full demo video](https://github.com/bradbrok/destruct-o-vision/releases/download/v0.1.1/destruct-o-vision-demo.mp4) (15 s, 60 fps).
 
-**Status: pre-alpha.** The app has a VCV-style rack: modules sit on rails, and you patch them with cables. It ships with 38 modules:
-- **Sources:** VCO, Ramps, Shape, Noise, a live Camera (macOS), Text, 3D Text, and 3D Object
-- **Processing:** Mixer, VCA, Folder, Keyer, Chroma Key, a line-scan Filter, Blur, Edge, Posterize
+**Status: pre-alpha.** The app has a VCV-style rack: modules sit on rails, and you patch them with cables. It ships with 41 modules:
+- **Sources:** VCO, Ramps, Shape, Noise, a live Camera and a Movie player (macOS), Text, 3D Text, and 3D Object
+- **Processing:** Mixer, Blend (two inputs, all of Photoshop's blend modes), VCA, Folder, Keyer, Chroma Key, a line-scan Filter, Blur, Edge, Posterize
 - **Color:** Colorize, RGB Combine/Split
-- **Space & time:** Feedback frame store, Delay (echo, freeze, and slit-scan through its Time CV), Displace, Mirror, Mosaic
+- **Space & time:** Feedback frame store, Delay (echo, freeze, and slit-scan through its Time CV), Displace, Mirror, Mosaic, Tile (repeat, mirror or brick grids that scroll)
 - **Analog signal path:** Encoder, Inject, Cable, VCR, TBC, TV
 - **Control:** LFO (Hz, or BPM with note values on a shared beat grid; Trig output), Macros, Audio In (any connected input and channel, picked by name; a resonant low/band/high-pass filter into an envelope follower, with Gate and Trig), MIDI Notes (pitch, gate, velocity, trigger), MIDI CC (four controllers, with learn)
 - **I/O:** Monitor, Output
+
+**Movies.** Movie plays a movie file (anything QuickTime opens: H.264, HEVC, ProRes) in a loop from In to Out. Speed runs from 4× backward to 4× forward. Loop, Bounce or Once sets what happens at the ends. In Scrub mode, Position picks the frame, so an LFO or Audio In can scrub through the clip. FPS holds frames for a stop-motion look, and BPM sync fits the loop to a note value on the beat grid. Click the file row to choose a movie, or drop movie files onto the rack.
+
+Click a Movie's picture to open its editor. Its timeline zooms in to single frames, so you can drag In and Out onto exactly the frame you want, hold the picture and step through it, or scrub. The editor also cuts the movie into splices, as on a Morphagene: Organize (knob and CV) picks the splice to play, Next steps on to the following one, and In and Out trim whichever splice is playing. Keys: space holds, the arrows step a frame (10 with shift), I and O set In and Out, S cuts a splice. Frames are decoded ahead of the playhead and kept in memory, so after its first pass a loop plays from memory, backward too.
 
 **3D and text.** 3D Object and 3D Text are raymarched per pixel, so a video signal patched into their rotation, twist or size CVs bends them line by line, and video patched into Tex paints their surfaces. Text renders whatever you type on its panel as a fill, outline, glow or contour bands, in system fonts.
 
 **Patching rules.** Ring colors show what a jack carries: gray and amber are video, blue is control (one value per field), green is composite. A light beside each control output shows its level. Video can plug into blue jacks too; it arrives as the picture's average brightness, a field or two late. Feedback's CVs are video-rate, so a picture patched into them warps the feedback pixel by pixel.
 
-Monitor, Output, Camera and TV show live pictures right in their panels. The Output module can display its picture clean, or on a simulated CRT with scan lines, phosphor mask, glow and curvature.
+Monitor, Output, Camera, Movie and TV show live pictures right in their panels. The Output module can display its picture clean, or on a simulated CRT with scan lines, phosphor mask, glow and curvature.
 
 **The analog signal path (Phase 2) works.** The Encoder turns RGB into a real composite waveform with sync pulses, color burst and modulated chroma. Composite cables (green) carry that waveform through a VCR and a Cable into a TV.
 

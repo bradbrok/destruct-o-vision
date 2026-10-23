@@ -4,7 +4,9 @@
 mod art;
 mod cli;
 mod demo;
+mod dialog;
 mod modules;
+mod movie_editor;
 mod panel;
 mod rack;
 mod rack_view;
@@ -720,6 +722,19 @@ impl AppState {
                 let file = Path::new(&name).with_extension(PATCH_EXT);
                 self.save(ui::patch_dir().join(file));
             }
+            UiAction::ChooseMovie(id) => self.choose_movie(id),
+        }
+    }
+
+    /// Asks for a movie file for the Movie module `id`.
+    fn choose_movie(&mut self, id: ModuleId) {
+        let Some(params) = self.rack.module(id).map(|m| m.params.clone()) else {
+            return;
+        };
+        let current = params.text();
+        if let Some(path) = dialog::choose_movie(&current).filter(|p| *p != current) {
+            self.rack.push_undo(self.rack.to_patch());
+            params.set_text(&path);
         }
     }
 
@@ -804,6 +819,8 @@ impl AppState {
             .collect();
         let mut stats = self.engine.stats();
         let controls = std::mem::take(&mut stats.controls).into_iter().collect();
+        let notes = std::mem::take(&mut stats.notes).into_iter().collect();
+        let timelines = std::mem::take(&mut stats.timelines).into_iter().collect();
         let frame = ui::FrameData {
             stats,
             output_preview: self.previews.output,
@@ -812,6 +829,8 @@ impl AppState {
                 aspect: self.previews.aspect,
                 screens: self.screens.clone(),
                 controls,
+                notes,
+                timelines,
             },
             probing: self.probe.is_some(),
             monitors: &monitors,

@@ -11,8 +11,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use dov_core::{CompositeOp, Kernel, ModuleId, ParamBank, PortKind, RasterStd};
-use dov_io::{CameraSource, CameraStatus};
-use dov_modules::{Behavior, EXTRA_SLOTS, FieldCtx, FieldIo, ModuleType, choice_value, param_value};
+use dov_io::{CameraSource, CameraStatus, Frame};
+use dov_modules::{
+    Behavior, EXTRA_SLOTS, FieldCtx, FieldIo, ModuleType, Timeline, choice_value, param_value,
+};
 
 use crate::codegen::{
     self, FieldInfoGpu, INPUT_BINDING_BASE, MAX_PARAM_SLOTS, ModuleUniformsGpu, OUTPUT_BINDING_BASE,
@@ -24,7 +26,7 @@ use crate::text::{self, Fonts};
 
 /// Storage format of composite signals.
 const COMPOSITE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
-/// Format of uploaded camera frames.
+/// Format of uploaded camera frames and pictures.
 const CAMERA_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 /// Scan lines a TV can draw per field (see tv_scan.wgsl).
 const TV_MAX_BEAMS: u32 = 640;
@@ -241,6 +243,13 @@ impl CameraState {
     }
 }
 
+/// A picture module's current picture, as uploaded.
+struct PictureState {
+    frame: Arc<Frame>,
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
 /// A TV's working state: separated sync, deflection, scan lines, decoded signal.
 struct TvState {
     sync: wgpu::Buffer,
@@ -293,7 +302,8 @@ enum Slot {
     /// Module output `k`, written as a storage texture.
     Output(usize),
     FeedbackStore,
-    CameraFrame,
+    /// The camera's latest frame, or a picture module's picture.
+    Frame,
     LinearSampler,
     TvSync {
         write: bool,
@@ -351,6 +361,7 @@ struct Instance {
     /// Frame store for feedback modules.
     store: Option<SignalTex>,
     camera: Option<CameraState>,
+    picture: Option<PictureState>,
     tv: Option<TvState>,
     ring: Option<Ring>,
     /// Per output: its brightness meter, when a cable takes it into a control input.
@@ -378,6 +389,7 @@ impl Instance {
             history: desc.outputs.iter().map(|_| None).collect(),
             store: None,
             camera: None,
+            picture: None,
             tv: None,
             ring: None,
             meters: desc.outputs.iter().map(|_| None).collect(),
@@ -483,6 +495,22 @@ impl Runtime {
             }
         }
         w
+    }
+
+    /// Each module's note (see `Behavior::note`), for modules that have one.
+    pub fn notes(&self) -> Vec<(ModuleId, String)> {
+        self.instances
+            .iter()
+            .filter_map(|i| Some((i.id, i.behavior.as_ref()?.note()?)))
+            .collect()
+    }
+
+    /// Where each movie module is in its movie.
+    pub fn timelines(&self) -> Vec<(ModuleId, Timeline)> {
+        self.instances
+            .iter()
+            .filter_map(|i| Some((i.id, i.behavior.as_ref()?.timeline()?)))
+            .collect()
     }
 
     /// The latest control outputs of every module that has any.
@@ -711,9 +739,10 @@ impl Runtime {
                         Some(t) => wgpu::BindingResource::TextureView(&t.view),
                         None => return Vec::new(),
                     },
-                    Slot::CameraFrame => {
-                        let frame = inst.camera.as_ref().and_then(|c| c.frame.as_ref());
-                        wgpu::BindingResource::TextureView(frame.map_or(&self.no_frame, |f| &f.1))
+                    Slot::Frame => {
+                        let camera = inst.camera.as_ref().and_then(|c| c.frame.as_ref()).map(|f| &f.1);
+                        let picture = inst.picture.as_ref().map(|p| &p.view);
+                        wgpu::BindingResource::TextureView(camera.or(picture).unwrap_or(&self.no_frame))
                     }
                     Slot::LinearSampler => wgpu::BindingResource::Sampler(&self.sampler),
                     Slot::TvSync { .. } => match tv {
@@ -833,12 +862,57 @@ impl Runtime {
                     u.extra[0] = [scale[0], scale[1], mirror, 0.0];
                 }
             }
+            Kernel::Picture => {
+                let choice = |id| {
+                    desc.param_index(id)
+                        .map_or(0, |k| choice_value(desc, &slots, &values, k))
+                };
+                let size = inst.picture.as_ref().map(|p| p.texture.size());
+                let aspect = size.map_or(16.0 / 9.0, |s| s.width as f32 / s.height.max(1) as f32);
+                let scale = camera_scale(choice("fit"), self.raster.display_aspect, aspect);
+                u.extra[0] = [scale[0], scale[1], choice("mirror") as f32, 0.0];
+            }
             Kernel::Composite(_) => {
                 u.extra[4..8].copy_from_slice(&composite_timing(&self.raster, field));
             }
             Kernel::Pointwise(_) | Kernel::LineScan(_) | Kernel::Control => {}
         }
         u
+    }
+
+    /// Uploads a picture module's picture when its behavior has a new one.
+    fn update_picture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, i: usize) {
+        let inst = &mut self.instances[i];
+        let wanted = inst.behavior.as_ref().and_then(|b| b.picture());
+        let current = inst.picture.as_ref().map(|p| &p.frame);
+        if wanted.as_ref().map(Arc::as_ptr) == current.map(Arc::as_ptr) {
+            return;
+        }
+        let old = inst.picture.take();
+        let mut rebind = true;
+        if let Some(frame) = wanted {
+            let (texture, view) = match old {
+                Some(p) if p.texture.width() == frame.width && p.texture.height() == frame.height => {
+                    rebind = false;
+                    (p.texture, p.view)
+                }
+                _ => camera_texture(device, frame.width, frame.height),
+            };
+            queue.write_texture(
+                texture.as_image_copy(),
+                &frame.bgra,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(frame.width * 4),
+                    rows_per_image: Some(frame.height),
+                },
+                texture.size(),
+            );
+            inst.picture = Some(PictureState { frame, texture, view });
+        }
+        if rebind {
+            self.instances[i].bind_groups = self.bind_groups(device, i);
+        }
     }
 
     /// Renders a text module's text again when it or its font has changed.
@@ -1078,6 +1152,7 @@ impl Runtime {
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         field: u64,
+        offline: bool,
     ) {
         let advanced = self.last_field.map_or(0, |l| field.saturating_sub(l));
         self.last_field = Some(field);
@@ -1094,14 +1169,17 @@ impl Runtime {
             raster: &raster,
             field,
             advanced,
+            offline,
         };
         for i in self.schedule.control.clone() {
             self.run_behavior(i, &ctx);
         }
         for i in self.schedule.gpu.clone() {
             self.run_behavior(i, &ctx);
-            if matches!(self.instances[i].ty.desc.kernel, Kernel::Camera) {
-                self.update_camera(device, queue, i);
+            match self.instances[i].ty.desc.kernel {
+                Kernel::Camera => self.update_camera(device, queue, i),
+                Kernel::Picture => self.update_picture(device, queue, i),
+                _ => {}
             }
             self.update_text(device, queue, i);
         }
@@ -1412,15 +1490,10 @@ fn pass_specs(ty: &ModuleType) -> Result<Vec<PassSpec>, String> {
                 dispatch: Dispatch::Pixels,
             }]
         }
-        Kernel::Camera => vec![PassSpec {
+        Kernel::Camera | Kernel::Picture => vec![PassSpec {
             label: desc.id,
             source: codegen::camera_shader(),
-            slots: vec![
-                (0, Uniforms),
-                (1, CameraFrame),
-                (2, LinearSampler),
-                (16, Output(0)),
-            ],
+            slots: vec![(0, Uniforms), (1, Frame), (2, LinearSampler), (16, Output(0))],
             dispatch: Dispatch::Pixels,
         }],
         Kernel::Composite(op) => {
@@ -1546,7 +1619,7 @@ fn layout_entry(binding: u32, slot: Slot, ty: &ModuleType) -> wgpu::BindGroupLay
             PortKind::Composite => COMPOSITE_FORMAT,
             PortKind::Mono | PortKind::Rgb | PortKind::Control => SIGNAL_FORMAT,
         }),
-        Slot::CameraFrame | Slot::TextSdf => texture(true),
+        Slot::Frame | Slot::TextSdf => texture(true),
         Slot::LinearSampler => wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
         Slot::TvSync { write } | Slot::TvBeams { write } => storage_buffer(!write),
         Slot::TvScan => storage_buffer(false),

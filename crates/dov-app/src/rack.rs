@@ -88,6 +88,7 @@ impl Rack {
             if let Some(spec) = desc.text {
                 params.set_text(m.text.as_deref().unwrap_or(spec.default));
             }
+            params.set_marks(m.marks.clone());
             self.modules.push(RackModule {
                 id: m.id,
                 ty,
@@ -142,6 +143,7 @@ impl Rack {
                     pos: m.pos,
                     params,
                     text: desc.text.map(|_| m.params.text()),
+                    marks: m.params.marks(),
                 }
             })
             .collect();
@@ -329,9 +331,15 @@ impl Rack {
     }
 
     pub fn duplicate(&mut self, id: ModuleId) -> Option<ModuleId> {
-        let (ty, (row, col), values, text) = {
+        let (ty, (row, col), values, text, marks) = {
             let m = self.module(id)?;
-            (m.ty, m.pos, m.params.snapshot(), m.params.text())
+            (
+                m.ty,
+                m.pos,
+                m.params.snapshot(),
+                m.params.text(),
+                m.params.marks(),
+            )
         };
         let new = self.add_module(ty, row, col + panel::layout(&ty.desc).hp);
         if let Some(m) = self.modules.iter().find(|m| m.id == new) {
@@ -339,6 +347,7 @@ impl Rack {
                 m.params.set(slot, v);
             }
             m.params.set_text(&text);
+            m.params.set_marks(marks);
         }
         Some(new)
     }

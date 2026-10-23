@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 use std::time::Instant;
 
 use dov_core::{ModuleId, RasterStd};
+use dov_modules::Timeline;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct IntervalSummary {
@@ -101,6 +102,10 @@ pub struct EngineStats {
     pub warnings: Vec<String>,
     /// Each module's control outputs, as of the last field.
     pub controls: Vec<(ModuleId, Vec<f32>)>,
+    /// Notes from modules about what they're doing, such as a movie's loop.
+    pub notes: Vec<(ModuleId, String)>,
+    /// Where each movie module is in its movie.
+    pub timelines: Vec<(ModuleId, Timeline)>,
     pub recent_present_ms: Vec<f32>,
 }
 
@@ -125,6 +130,8 @@ impl Default for EngineStats {
             passes: 0,
             warnings: Vec::new(),
             controls: Vec::new(),
+            notes: Vec::new(),
+            timelines: Vec::new(),
             recent_present_ms: Vec::new(),
         }
     }

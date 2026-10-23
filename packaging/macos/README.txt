@@ -21,6 +21,13 @@ Audio In asks for microphone access the first time; click its top row to
 pick any input and channel. MIDI Notes and MIDI CC listen to every MIDI
 device, including ones plugged in later.
 
+MOVIES
+Drop movie files onto the rack to play them, or click a Movie module's top
+row to choose a file. Click its picture to set In and Out to the frame and
+to cut the movie into splices; Organize and Next pick the splice that plays.
+Patches remember where the file is, so keep movies where they were when you
+saved.
+
 EXAMPLE MODULES
 Copy the folders in "Example Modules" into Documents/Destruct-O-Vision/modules
 (Modules > Open modules folder). They load right away:

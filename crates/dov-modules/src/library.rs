@@ -11,6 +11,7 @@ use dov_core::{
 use crate::audio::AudioIn;
 use crate::behaviors::{Cable, Encoder, Lfo, Macros, Spin, Vco};
 use crate::midi::{self, MidiCc, MidiNotes};
+use crate::movie::MoviePlayer;
 use crate::{ModuleType, Origin};
 
 const MONO: PortKind = PortKind::Mono;
@@ -43,6 +44,7 @@ static BUILTINS: &[Builtin] = &[
     file!("noise.wgsl"),
     file!("shape.wgsl"),
     file!("mixer.wgsl"),
+    file!("blend.wgsl"),
     file!("vca.wgsl"),
     file!("fold.wgsl"),
     file!("keyer.wgsl"),
@@ -60,11 +62,13 @@ static BUILTINS: &[Builtin] = &[
     file!("displace.wgsl"),
     file!("mirror.wgsl"),
     file!("mosaic.wgsl"),
+    file!("tile.wgsl"),
     file!("blur.wgsl"),
     file!("edge.wgsl"),
     file!("posterize.wgsl"),
     file!("monitor.wgsl"),
     Builtin::Rust(&CAMERA),
+    Builtin::Rust(&MOVIE),
     Builtin::Rust(&ENCODER),
     Builtin::Rust(&INJECT),
     Builtin::Rust(&CABLE),
@@ -379,6 +383,69 @@ static CAMERA: ModuleType = ModuleType {
         kernel: Kernel::Camera,
     },
     behavior: None,
+    origin: Origin::BuiltIn,
+};
+
+static MOVIE: ModuleType = ModuleType {
+    desc: ModuleDesc {
+        id: "dov.movie",
+        name: "Movie",
+        category: Category::Io,
+        description: "Plays a movie file in a loop from In to Out. Click the picture to set \
+                      In and Out to the frame and to cut the movie into splices, as on a \
+                      Morphagene: Organize picks the splice to play and Next steps on to the \
+                      next one. Below 0, Speed plays backward. Loop goes round, Bounce goes \
+                      back and forth, Once stops at the end. In Scrub mode Position picks the \
+                      frame, so any CV can scrub. FPS holds frames for a choppier picture, \
+                      and BPM sync fits the loop to a note. Restart jumps back to Position; \
+                      Pos follows the playhead and End fires at the end of each loop.",
+        inputs: &[
+            PortDesc::new("restart", "Restart", CONTROL),
+            PortDesc::new("next", "Next", CONTROL),
+        ],
+        outputs: &[
+            PortDesc::new("out", "Out", RGB),
+            PortDesc::new("pos", "Pos", CONTROL),
+            PortDesc::new("end", "End", CONTROL),
+        ],
+        params: &[
+            ParamDesc::knob("speed", "Speed", -4.0, 4.0, 1.0)
+                .unit("×")
+                .control_cv(),
+            // Of the splice playing.
+            ParamDesc::knob("in_point", "In", 0.0, 100.0, 0.0)
+                .unit("%")
+                .control_cv()
+                .in_editor(),
+            ParamDesc::knob("out_point", "Out", 0.0, 100.0, 100.0)
+                .unit("%")
+                .control_cv()
+                .in_editor(),
+            ParamDesc::knob("organize", "Organize", 0.0, 1.0, 0.0).control_cv(),
+            ParamDesc::choice("loop", "Loop", &["Loop", "Bounce", "Once"]),
+            ParamDesc::choice("mode", "Mode", &["Play", "Scrub"]),
+            ParamDesc::knob("position", "Position", 0.0, 100.0, 0.0)
+                .unit("%")
+                .control_cv(),
+            ParamDesc::knob("fps", "FPS", 1.0, 60.0, 60.0)
+                .exp()
+                .unit("fps")
+                .control_cv(),
+            ParamDesc::choice("sync", "Sync", &["Free", "BPM"]),
+            ParamDesc::knob("bpm", "BPM", 20.0, 300.0, 120.0).unit("BPM"),
+            ParamDesc::choice("length", "Length", &DIVISIONS).default_choice(2),
+            ParamDesc::choice("fit", "Fit", &["Fill", "Fit", "Stretch"]),
+        ],
+        screen: true,
+        ring: None,
+        // The movie file's path.
+        text: Some(TextSpec {
+            default: "",
+            live: Some(Live::MovieFile),
+        }),
+        kernel: Kernel::Picture,
+    },
+    behavior: Some(|| Box::new(MoviePlayer::default())),
     origin: Origin::BuiltIn,
 };
 

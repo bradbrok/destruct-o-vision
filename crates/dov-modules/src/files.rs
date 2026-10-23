@@ -98,6 +98,7 @@ fn desc(m: f::Module) -> ModuleDesc {
                 f::Cv::Control => PortKind::Control,
             }),
             live: None,
+            in_editor: false,
         })
         .collect();
     let source = leak(m.source);

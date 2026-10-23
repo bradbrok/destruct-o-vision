@@ -173,7 +173,8 @@ pub fn composite_shader(parts: &[&str]) -> String {
     s
 }
 
-/// The capture pass behind [`Kernel::Camera`].
+/// The pass behind [`Kernel::Camera`] and [`Kernel::Picture`]: a frame
+/// scaled into the raster.
 pub fn camera_shader() -> String {
     format!("{PRELUDE}{}", include_str!("shaders/camera.wgsl"))
 }

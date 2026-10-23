@@ -3,18 +3,20 @@
 //! input to pick its cable back up; right-click for menus.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use dov_core::{Category, Live, ModuleDesc, ModuleId, ParamBank, ParamKind, Patch, PortAddr, PortKind};
 use dov_io::InputDevice;
-use dov_modules::{ModuleType, Origin};
+use dov_modules::{ModuleType, Origin, Timeline};
 use egui::emath::TSTransform;
 use egui::load::SizedTexture;
 use egui::{Color32, Id, Painter, Pos2, Rect, Sense, Ui, Vec2, pos2, vec2};
 
 use crate::art::LoadedArt;
+use crate::dialog;
+use crate::movie_editor::{self, MovieEditor};
 use crate::panel::{self, ATTEN_R, Element, HP, JACK_R, KNOB_R, Placed, ROW_H};
 use crate::rack::Rack;
 
@@ -60,6 +62,11 @@ enum Action {
     Duplicate(ModuleId),
     Reset(ModuleId),
     Add(&'static ModuleType, i32, i32),
+    /// A Movie module playing this file.
+    AddMovie(String, i32, i32),
+    SetText(ModuleId, String),
+    /// Open the editor of a Movie module, by it: here on screen.
+    Edit(ModuleId, Pos2),
 }
 
 /// The probe preview the engine renders for the hovered jack.
@@ -71,6 +78,10 @@ pub struct ProbeView {
     /// Each module's control outputs as of the last field, for the lights
     /// by their jacks.
     pub controls: HashMap<ModuleId, Vec<f32>>,
+    /// Notes from modules about what they're doing (a movie's loop).
+    pub notes: HashMap<ModuleId, String>,
+    /// Where each Movie module is in its movie.
+    pub timelines: HashMap<ModuleId, Timeline>,
 }
 
 pub struct RackView {
@@ -86,6 +97,11 @@ pub struct RackView {
     art: ArtCache,
     /// The audio inputs as of the last time a list of them was opened.
     audio_inputs: Vec<InputDevice>,
+    /// A Movie module whose file chooser was asked for. The chooser is
+    /// modal, so the app opens it between frames.
+    pub choose_movie: Option<ModuleId>,
+    /// The open movie editor.
+    editor: Option<MovieEditor>,
 }
 
 impl Default for RackView {
@@ -100,6 +116,8 @@ impl Default for RackView {
             to_global: TSTransform::IDENTITY,
             art: ArtCache::default(),
             audio_inputs: Vec::new(),
+            choose_movie: None,
+            editor: None,
         }
     }
 }
@@ -118,6 +136,11 @@ impl RackView {
             .zoom_range(0.2..=1.5)
             .show(ui, &mut scene_rect, |ui| target = self.contents(ui, rack, probe));
         self.scene_rect = scene_rect;
+        if let Some(editor) = &mut self.editor
+            && !editor.show(ui.ctx(), rack, probe, &mut self.choose_movie)
+        {
+            self.editor = None;
+        }
         target
     }
 
@@ -264,6 +287,17 @@ impl RackView {
                     let uv = Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0));
                     painter.image(texture, screen, uv, Color32::WHITE);
                 }
+                if plays_movies(desc) {
+                    if let Some(tl) = probe.timelines.get(&id) {
+                        movie_editor::draw_strip(&painter, screen, tl, &params.marks());
+                    }
+                    let response = ui.interact(screen, Id::unique(("screen", id)), Sense::click());
+                    if response.clicked() {
+                        let by = self.to_global * (rect.right_top() + vec2(12.0, 0.0));
+                        actions.push(Action::Edit(id, by));
+                    }
+                    response.on_hover_text("Click to set In and Out to the frame and cut splices");
+                }
             }
             for placed in &layout.elements {
                 let cell = placed.cell.translate(at.to_vec2());
@@ -316,6 +350,32 @@ impl RackView {
             }
         }
 
+        // Movie files dropped on a Movie module play there; anywhere else,
+        // each gets a Movie of its own.
+        let dropped: Vec<String> = ui.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path())
+                .filter(|p| dialog::is_movie(p))
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect()
+        });
+        let onto = self
+            .hovered_module
+            .filter(|&id| rack.module(id).is_some_and(|m| plays_movies(&m.ty.desc)));
+        for (k, path) in dropped.into_iter().enumerate() {
+            match onto.filter(|_| k == 0) {
+                Some(id) => actions.push(Action::SetText(id, path)),
+                None => {
+                    let at = pointer.unwrap_or(pos2(0.0, (rows - 1) as f32 * ROW_H));
+                    let row = (at.y / ROW_H).floor() as i32;
+                    let col = (at.x / HP).round() as i32;
+                    actions.push(Action::AddMovie(path, row, col));
+                }
+            }
+        }
+
         for action in actions {
             match action {
                 Action::Undo(patch) => rack.push_undo(*patch),
@@ -332,6 +392,31 @@ impl RackView {
                 Action::Reset(id) => rack.reset_params(id),
                 Action::Add(ty, row, col) => {
                     rack.add_module(ty, row.max(0), col.max(0));
+                }
+                Action::AddMovie(path, row, col) => {
+                    if let Some(ty) = dov_modules::find("dov.movie") {
+                        let id = rack.add_module(ty, row.max(0), col.max(0));
+                        if let Some(m) = rack.module(id) {
+                            m.params.set_text(&path);
+                        }
+                    }
+                }
+                Action::Edit(id, by) => {
+                    if self.editor.as_ref().is_none_or(|e| e.id != id) {
+                        if let Some(old) = self.editor.take() {
+                            old.close(rack);
+                        }
+                        self.editor = Some(MovieEditor::new(id, by));
+                    }
+                }
+                Action::SetText(id, text) => {
+                    let Some(params) = rack.module(id).map(|m| m.params.clone()) else {
+                        continue;
+                    };
+                    if params.text() != text {
+                        rack.push_undo(rack.to_patch());
+                        params.set_text(&text);
+                    }
                 }
             }
         }
@@ -361,6 +446,7 @@ impl RackView {
             Element::Text if desc.text.and_then(|t| t.live) == Some(Live::AudioInputs) => {
                 self.audio_input_picker(ui, ctx, cell, actions);
             }
+            Element::Text if plays_movies(desc) => self.movie_picker(ui, ctx, cell, actions),
             Element::Text => {
                 let mut text = params.text();
                 let field = egui::TextEdit::singleline(&mut text)
@@ -377,8 +463,8 @@ impl RackView {
                 }
                 response.on_hover_text("Type here; the text renders live");
             }
-            Element::Choice { param } if desc.params[param].live.is_some() => {
-                self.live_choice(ui, ctx, cell, param, actions);
+            Element::Choice { param } if panel::picks_from_list(&desc.params[param]) => {
+                self.list_choice(ui, ctx, cell, param, actions);
             }
             Element::Choice { param } => {
                 let p = &desc.params[param];
@@ -596,9 +682,54 @@ impl RackView {
         ));
     }
 
-    /// A choice whose options run on into a list found at run time, such
-    /// as the channels of the module's audio input. Click to pick.
-    fn live_choice(
+    /// The text row of a module that plays a movie: the file's name. Click
+    /// to choose another; right-click to remove it.
+    fn movie_picker(&mut self, ui: &mut Ui, ctx: &ElementCtx, cell: Rect, actions: &mut Vec<Action>) {
+        let response = ui.interact(
+            cell.shrink2(vec2(0.0, 3.0)),
+            Id::unique(("text", ctx.id)),
+            Sense::click(),
+        );
+        let current = ctx.params.text();
+        let name = Path::new(&current)
+            .file_name()
+            .map_or_else(|| current.clone(), |n| n.to_string_lossy().into_owned());
+        let shown = if current.is_empty() {
+            "Choose a movie…"
+        } else {
+            &name
+        };
+        panel::draw_picker(ctx.painter, cell, shown, response.hovered());
+        if response.clicked() {
+            self.choose_movie = Some(ctx.id);
+        }
+        response.context_menu(|ui| {
+            if ui.button("Choose a movie…").clicked() {
+                self.choose_movie = Some(ctx.id);
+                ui.close();
+            }
+            let remove = egui::Button::new("Remove the movie");
+            if ui.add_enabled(!current.is_empty(), remove).clicked() {
+                actions.push(Action::SetText(ctx.id, String::new()));
+                ui.close();
+            }
+        });
+        let note = ctx
+            .probe
+            .notes
+            .get(&ctx.id)
+            .map_or_else(String::new, |n| format!("\n{n}"));
+        response.on_hover_text(if current.is_empty() {
+            "No movie yet. Click to choose one, or drop a movie file on the panel".into()
+        } else {
+            format!("{current}{note}\nClick to choose another movie; right-click to remove it")
+        });
+    }
+
+    /// A choice picked from a list: one with many options, or one whose
+    /// options run on into a list found at run time, such as the channels
+    /// of the module's audio input. Click to pick.
+    fn list_choice(
         &mut self,
         ui: &mut Ui,
         ctx: &ElementCtx,
@@ -607,7 +738,7 @@ impl RackView {
         actions: &mut Vec<Action>,
     ) {
         let p = &ctx.desc.params[param];
-        let (ParamKind::Choice { options, .. }, Some(list)) = (p.kind, p.live) else {
+        let ParamKind::Choice { options, .. } = p.kind else {
             return;
         };
         let response = ui.interact(
@@ -615,7 +746,7 @@ impl RackView {
             Id::unique(("param", ctx.id, param)),
             Sense::click(),
         );
-        if response.clicked() {
+        if response.clicked() && p.live.is_some() {
             self.audio_inputs = dov_io::audio::input_devices();
         }
         let v = ctx.params.get(param).round().max(0.0) as usize;
@@ -623,7 +754,10 @@ impl RackView {
         let label = if ctx.labels { p.name } else { "" };
         panel::draw_switch(ctx.painter, cell, label, &name, response.hovered());
 
-        let count = options.len() + live_len(list, ctx.params, &self.audio_inputs);
+        let live = p
+            .live
+            .map_or(0, |list| live_len(list, ctx.params, &self.audio_inputs));
+        let count = options.len() + live;
         let mut picked = None;
         egui::Popup::menu(&response).show(|ui| {
             egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
@@ -634,7 +768,7 @@ impl RackView {
                     }
                 }
             });
-            if count == options.len() {
+            if p.live.is_some() && live == 0 {
                 ui.label("Its input isn't connected");
             }
         });
@@ -866,6 +1000,7 @@ fn jack_of(p: &Placed) -> Option<(Side, usize)> {
 fn live_len(list: Live, params: &ParamBank, audio_inputs: &[InputDevice]) -> usize {
     match list {
         Live::AudioInputs => audio_inputs.len(),
+        Live::MovieFile => 0,
         Live::AudioChannels => {
             let device = params.text();
             audio_inputs
@@ -880,6 +1015,11 @@ fn live_len(list: Live, params: &ParamBank, audio_inputs: &[InputDevice]) -> usi
                 .map_or(0, |d| d.channels)
         }
     }
+}
+
+/// Whether a module's text is a movie file to play.
+fn plays_movies(desc: &ModuleDesc) -> bool {
+    desc.text.and_then(|t| t.live) == Some(Live::MovieFile)
 }
 
 fn port_addr(rack: &Rack, end: PortEnd) -> Option<PortAddr> {
@@ -1097,6 +1237,7 @@ mod tests {
         view: RackView,
         rack: Rack,
         time: f64,
+        timelines: HashMap<ModuleId, Timeline>,
     }
 
     impl Harness {
@@ -1106,6 +1247,7 @@ mod tests {
                 view: RackView::default(),
                 rack,
                 time: 0.0,
+                timelines: HashMap::new(),
             };
             // Let the scene fit itself and the transform settle.
             for _ in 0..3 {
@@ -1127,6 +1269,8 @@ mod tests {
                 aspect: 4.0 / 3.0,
                 screens: Default::default(),
                 controls: Default::default(),
+                notes: Default::default(),
+                timelines: self.timelines.clone(),
             };
             let (view, rack) = (&mut self.view, &mut self.rack);
             let output = self.ctx.run_ui(input, |ui| {
@@ -1202,6 +1346,26 @@ mod tests {
                 .copied()
                 .unwrap();
             self.view.to_global * placed.cell.translate(at.to_vec2()).center()
+        }
+
+        /// The middle of a module's screen.
+        fn screen(&self, module: ModuleId) -> Pos2 {
+            let m = self.rack.module(module).unwrap();
+            let at = pos2(m.pos.1 as f32 * HP, m.pos.0 as f32 * ROW_H);
+            let screen = panel::layout(&m.ty.desc).screen.unwrap();
+            self.view.to_global * screen.translate(at.to_vec2()).center()
+        }
+
+        fn key(&mut self, key: egui::Key, modifiers: Modifiers) {
+            for pressed in [true, false] {
+                self.frame(vec![Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers,
+                }]);
+            }
         }
 
         fn click(&mut self, at: Pos2) {
@@ -1332,6 +1496,110 @@ mod tests {
             0.0,
             "rather than stepping to the next channel"
         );
+    }
+
+    #[test]
+    fn a_long_choice_opens_a_list_instead_of_stepping() {
+        let mut rack = Rack::default();
+        let blend = rack.add_module(dov_modules::find("dov.blend").unwrap(), 0, 0);
+        let mut h = Harness::new(rack);
+        let mode = h.rack.module(blend).unwrap().ty.desc.param_index("mode").unwrap();
+        let params = h.rack.module(blend).unwrap().params.clone();
+        h.click(h.element(blend, |e| matches!(e, Element::Choice { param } if param == mode)));
+        assert!(egui::Popup::is_any_open(&h.ctx), "the modes are listed");
+        assert_eq!(params.get(mode), 0.0, "and none is picked until one is clicked");
+    }
+
+    /// A rack with a Movie module playing a 240-frame movie at 24 fps,
+    /// its editor open.
+    fn movie_editor() -> (Harness, ModuleId) {
+        let mut rack = Rack::default();
+        let movie = rack.add_module(dov_modules::find("dov.movie").unwrap(), 0, 0);
+        rack.module(movie).unwrap().params.set_text("/clips/sneeze.mp4");
+        let mut h = Harness::new(rack);
+        h.timelines.insert(
+            movie,
+            Timeline {
+                frames: 240,
+                fps: 24.0,
+                splice: 0,
+                first: 0,
+                last: 239,
+                frame: 50,
+            },
+        );
+        h.click(h.screen(movie));
+        h.frame(vec![]);
+        assert!(h.view.editor.is_some(), "clicking the picture opens the editor");
+        (h, movie)
+    }
+
+    /// Where frame `frame` of 240 is on the editor's track.
+    fn on_track(h: &Harness, movie: ModuleId, frame: f32) -> Pos2 {
+        let rect = h
+            .ctx
+            .read_response(movie_editor::timeline_id(movie))
+            .unwrap()
+            .rect;
+        pos2(rect.left() + frame / 240.0 * rect.width(), rect.top() + 33.0)
+    }
+
+    fn loop_of(h: &Harness, movie: ModuleId, bounds: (u32, u32)) -> (u32, u32) {
+        let m = h.rack.module(movie).unwrap();
+        let slot = |id| m.ty.desc.param_index(id).unwrap();
+        let params = &m.params;
+        dov_modules::loop_frames(
+            params.get(slot("in_point")),
+            params.get(slot("out_point")),
+            bounds,
+        )
+    }
+
+    #[test]
+    fn dragging_in_on_the_timeline_lands_on_a_frame() {
+        let (mut h, movie) = movie_editor();
+        h.drag(on_track(&h, movie, 0.0), on_track(&h, movie, 120.0));
+        assert_eq!(loop_of(&h, movie, (0, 240)), (120, 239));
+        let params = h.rack.module(movie).unwrap().params.clone();
+        assert_eq!(params.cue(), None, "let go, it plays on");
+        // The whole drag is one step to undo.
+        assert!(h.rack.undo());
+        assert_eq!(loop_of(&h, movie, (0, 240)), (0, 239));
+    }
+
+    #[test]
+    fn keys_hold_step_cut_and_mark_at_the_playhead() {
+        let (mut h, movie) = movie_editor();
+        // Keys go to the editor while the pointer is over it.
+        h.frame(vec![Event::PointerMoved(on_track(&h, movie, 200.0))]);
+        h.frame(vec![]);
+        let params = h.rack.module(movie).unwrap().params.clone();
+        h.key(egui::Key::Space, Modifiers::NONE);
+        assert_eq!(params.cue(), Some(50.0), "held where it was playing");
+        h.key(egui::Key::ArrowRight, Modifiers::NONE);
+        h.key(egui::Key::ArrowRight, Modifiers::NONE);
+        assert_eq!(params.cue(), Some(52.0));
+
+        h.key(egui::Key::S, Modifiers::NONE);
+        assert_eq!(params.marks(), [52.0 / 24.0], "a splice from the playhead on");
+        h.key(egui::Key::I, Modifiers::NONE);
+        h.key(egui::Key::ArrowRight, Modifiers::SHIFT);
+        assert_eq!(params.cue(), Some(62.0));
+        h.key(egui::Key::O, Modifiers::NONE);
+        // In and Out of the new splice, the one that plays now.
+        assert_eq!(loop_of(&h, movie, (52, 240)), (52, 62));
+        let organize = h
+            .rack
+            .module(movie)
+            .unwrap()
+            .ty
+            .desc
+            .param_index("organize")
+            .unwrap();
+        assert_eq!(params.get(organize), 0.75, "the second of two splices");
+
+        h.key(egui::Key::Space, Modifiers::NONE);
+        assert_eq!(params.cue(), None, "played on");
     }
 
     #[test]

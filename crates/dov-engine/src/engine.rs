@@ -249,7 +249,7 @@ impl Engine {
                         log::debug!("fields {}..{target} dropped", target - advanced + 1);
                     }
                     self.fields_dropped += advanced.saturating_sub(1);
-                    self.encode_field(&mut encoder, target);
+                    self.encode_field(&mut encoder, target, false);
                     self.field = Some(target);
                     self.fields_rendered += 1;
                     self.field_intervals.tick(now);
@@ -315,7 +315,7 @@ impl Engine {
         };
         let target = self.field.map_or(0, |f| f + 1);
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        self.encode_field(&mut encoder, target);
+        self.encode_field(&mut encoder, target, true);
         self.field = Some(target);
         self.fields_rendered += 1;
         let path = rec.dir.join(format!("frame-{:05}.png", rec.done));
@@ -460,9 +460,10 @@ impl Engine {
         }
     }
 
-    fn encode_field(&mut self, encoder: &mut wgpu::CommandEncoder, field: u64) {
+    /// `offline`: recording, so sources wait for their data.
+    fn encode_field(&mut self, encoder: &mut wgpu::CommandEncoder, field: u64, offline: bool) {
         self.runtime
-            .run_field(&self.device, self.queue.raw(), encoder, field);
+            .run_field(&self.device, self.queue.raw(), encoder, field, offline);
         let b = &self.bindings;
         self.blitter.encode(
             self.queue.raw(),
@@ -623,6 +624,8 @@ impl Engine {
         s.passes = self.runtime.pass_count();
         s.warnings = self.runtime.warnings();
         s.controls = self.runtime.control_values();
+        s.notes = self.runtime.notes();
+        s.timelines = self.runtime.timelines();
         s.recent_present_ms.clear();
         s.recent_present_ms.extend(self.present_intervals.samples());
     }

@@ -39,6 +39,9 @@ pub struct ModuleState {
     /// The text field, for modules that have one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// Points on the module's timeline in seconds: a movie's splices.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub marks: Vec<f64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -86,6 +89,7 @@ mod tests {
                 pos: (0, 4),
                 params: [("multiple".to_string(), 8.0)].into(),
                 text: Some("HELLO".into()),
+                marks: vec![1.5, 4.25],
             }],
             cables: vec![Cable {
                 from: PortAddr {

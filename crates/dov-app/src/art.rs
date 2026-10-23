@@ -90,7 +90,12 @@ pub fn required(desc: &ModuleDesc) -> Vec<String> {
     if desc.screen {
         ids.push(component_id(Place::Screen));
     }
-    ids.extend(desc.params.iter().map(|p| component_id(Place::Param(p.id))));
+    ids.extend(
+        desc.params
+            .iter()
+            .filter(|p| !p.in_editor)
+            .map(|p| component_id(Place::Param(p.id))),
+    );
     ids.extend(
         desc.cv_params()
             .map(|i| component_id(Place::Cv(desc.params[i].id))),

@@ -305,6 +305,7 @@ mod tests {
                 raster: &raster,
                 field,
                 advanced: u64::from(field > first),
+                offline: false,
             };
             let mut io = FieldIo {
                 desc,
