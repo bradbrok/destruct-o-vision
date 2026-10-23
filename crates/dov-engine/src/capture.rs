@@ -4,10 +4,14 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::time::{Duration, Instant};
 
 const PENDING: u8 = 0;
 const READY: u8 = 1;
 const FAILED: u8 = 2;
+
+/// How long a recording waits for one frame's pixels before giving up.
+const FINISH_WAIT: Duration = Duration::from_secs(10);
 
 pub struct Capture {
     buffer: wgpu::Buffer,
@@ -100,10 +104,19 @@ impl Capture {
     /// compressed: for recordings, which go one frame at a time.
     pub fn finish_now(&self, device: &wgpu::Device) -> Result<(), String> {
         self.map();
-        let _ = device.poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: None,
-        });
+        // Another thread's submit can take the finished mapping and run its
+        // callback a moment after this poll returns, so wait for the
+        // callback itself.
+        let deadline = Instant::now() + FINISH_WAIT;
+        while self.state.load(Ordering::Acquire) == PENDING && Instant::now() < deadline {
+            let _ = device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            });
+            if self.state.load(Ordering::Acquire) == PENDING {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
         if self.state.load(Ordering::Acquire) != READY {
             return Err("buffer mapping failed".into());
         }
