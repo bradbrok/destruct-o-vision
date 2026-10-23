@@ -10,10 +10,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use dov_core::{CompositeOp, Kernel, ModuleId, ParamBank, PortKind, RasterStd};
+use dov_core::{CompositeOp, Kernel, ModuleId, ParamBank, ParamKind, PortKind, RasterStd};
 use dov_io::{CameraSource, CameraStatus, Frame};
 use dov_modules::{
-    Behavior, EXTRA_SLOTS, FieldCtx, FieldIo, ModuleType, Timeline, choice_value, param_value,
+    Behavior, EXTRA_SLOTS, FieldCtx, FieldIo, ModuleType, Timeline, choice_value, crt, param_value,
 };
 
 use crate::codegen::{
@@ -121,6 +121,15 @@ impl Ring {
             writes: 0,
         }
     }
+}
+
+/// The CRT module's settings, for the engine's picture tube.
+pub(crate) struct CrtState {
+    /// Param values with control-rate CV, clamped to their ranges; choices
+    /// as option indices.
+    pub params: Vec<f32>,
+    /// What its behavior hands on (see `dov_modules::crt::Tube`).
+    pub events: [f32; 4],
 }
 
 /// The average brightness of a video output, for cables into control inputs.
@@ -571,9 +580,40 @@ impl Runtime {
             .map_or(&self.black.view, |t| &t.view)
     }
 
-    /// Param values of the Output module, which set how the display shows it.
-    pub fn output_params(&self) -> Option<Vec<f32>> {
-        Some(self.instances[self.schedule.output?].params.snapshot())
+    /// How the CRT showing the output window is set, or `None` when an
+    /// Output shows it clean.
+    pub fn crt(&self) -> Option<CrtState> {
+        let i = self.schedule.output?;
+        let inst = &self.instances[i];
+        let desc = &inst.ty.desc;
+        if desc.id != crt::ID {
+            return None;
+        }
+        let slots = inst.params.snapshot();
+        let inputs = self.input_values(i);
+        let params = desc
+            .params
+            .iter()
+            .enumerate()
+            .map(|(k, p)| match p.kind {
+                ParamKind::Choice { .. } => choice_value(desc, &slots, &inputs, k) as f32,
+                ParamKind::Knob { min, max, .. } => param_value(desc, &slots, &inputs, k).clamp(min, max),
+            })
+            .collect();
+        Some(CrtState {
+            params,
+            events: inst.extra[0],
+        })
+    }
+
+    /// Where the CRT's yoke throws each sample (its hidden second output),
+    /// or black when no CRT shows the output window.
+    pub fn yoke_view(&self) -> &wgpu::TextureView {
+        self.schedule
+            .output
+            .filter(|&o| self.instances[o].ty.desc.id == crt::ID)
+            .and_then(|o| self.instances[o].outputs.get(1)?.as_ref())
+            .map_or(&self.black.view, |t| &t.view)
     }
 
     /// Modules whose panel shows a live picture of their first output.

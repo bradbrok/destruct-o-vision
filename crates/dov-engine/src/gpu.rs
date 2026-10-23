@@ -57,16 +57,7 @@ pub const PREVIEW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
 pub struct BlitGpu {
     pub scale: [f32; 2],
-    /// 0 plain, 1 CRT.
-    pub mode: f32,
-    /// 0 aperture grille, 1 shadow mask, 2 slot mask.
-    pub mask_type: f32,
-    pub mask: f32,
-    pub scanlines: f32,
-    pub glow: f32,
-    pub curvature: f32,
-    pub src_size: [f32; 2],
-    pub dst_size: [f32; 2],
+    _pad: [f32; 2],
 }
 
 impl BlitGpu {

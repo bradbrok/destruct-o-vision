@@ -8,9 +8,11 @@ mod engine;
 mod flywheel;
 pub mod gpu;
 pub mod graph;
+mod recorder;
 mod runtime;
 pub mod stats;
 mod text;
+mod tube;
 
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -51,6 +53,13 @@ pub enum Command {
         dir: PathBuf,
         seconds: f64,
     },
+    /// Record the output window, as it shows, to a movie file while the
+    /// patch plays, until `StopMovie`.
+    StartMovie {
+        path: PathBuf,
+        codec: dov_io::Codec,
+    },
+    StopMovie,
     Shutdown,
 }
 
@@ -62,6 +71,8 @@ pub enum EngineEvent {
     Screens(Vec<(ModuleId, Preview)>),
     /// A recording finished: this many frames were saved to the folder.
     Recorded(PathBuf, u64),
+    /// A movie was written, or couldn't be.
+    MovieSaved(Result<dov_io::Written, String>),
 }
 
 /// A texture the UI can display, updated by the engine every field.

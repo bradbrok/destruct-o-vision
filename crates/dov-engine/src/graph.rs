@@ -68,12 +68,14 @@ pub struct Schedule {
     pub delayed_outputs: Vec<(usize, usize)>,
     /// Video outputs measured for control inputs.
     pub sampled_outputs: Vec<(usize, usize)>,
-    /// The module whose signal goes to the output window.
+    /// The module whose signal goes to the output window: the first Output
+    /// or CRT.
     pub output: Option<usize>,
     pub warnings: Vec<String>,
 }
 
-pub const OUTPUT_MODULE: &str = "dov.output";
+/// Modules that show their input in the output window.
+pub const DISPLAY_MODULES: [&str; 2] = ["dov.output", dov_modules::crt::ID];
 
 pub fn schedule(snap: &PatchSnapshot) -> Schedule {
     let index: HashMap<ModuleId, usize> = snap.modules.iter().enumerate().map(|(i, m)| (m.id, i)).collect();
@@ -156,7 +158,10 @@ pub fn schedule(snap: &PatchSnapshot) -> Schedule {
     s.delayed_outputs = delayed.into_iter().collect();
     s.delayed_outputs.sort_unstable();
 
-    s.output = snap.modules.iter().position(|m| m.ty.desc.id == OUTPUT_MODULE);
+    s.output = snap
+        .modules
+        .iter()
+        .position(|m| DISPLAY_MODULES.contains(&m.ty.desc.id));
     s
 }
 

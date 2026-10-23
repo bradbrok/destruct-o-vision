@@ -10,12 +10,17 @@ use dov_core::{ModuleId, RasterStd};
 use crate::capture::Capture;
 use crate::flywheel::Flywheel;
 use crate::gpu::{self, BlitBinding, Blitter, GpuQueue};
+use crate::recorder::Recorder;
 use crate::runtime::Runtime;
 use crate::stats::{EngineStats, IntervalTracker};
+use crate::tube::{self, Refresh, Tube, TubeGpu, ViewGpu};
 use crate::{Command, EngineEvent, Preview, Previews};
 
 const STATS_WINDOW: usize = 240;
 const DEFAULT_DISPLAY_HZ: f64 = 60.0;
+/// Height of display captures and recordings, unless `DOV_CAPTURE_HEIGHT`
+/// says otherwise (to see a CRT's mask as a big display shows it).
+const CAPTURE_HEIGHT: u32 = 1080;
 
 /// Maps wall-clock time onto field indices of the current raster standard.
 struct FieldClock {
@@ -32,7 +37,12 @@ impl FieldClock {
     }
 
     fn field_at(&self, t: Instant) -> u64 {
-        ((t - self.start).as_secs_f64() / self.period) as u64
+        self.position(t) as u64
+    }
+
+    /// Fields since the start, with the fraction of the current one.
+    fn position(&self, t: Instant) -> f64 {
+        t.saturating_duration_since(self.start).as_secs_f64() / self.period
     }
 
     fn time_of(&self, field: u64) -> Instant {
@@ -132,6 +142,11 @@ pub(crate) struct Engine {
 
     runtime: Runtime,
     blitter: Blitter,
+    tube: Tube,
+    /// The tube's settings for the last refresh presented, for captures.
+    tube_settings: Option<TubeGpu>,
+    /// Where on the field clock the last presented refresh was shown.
+    last_shown: Option<f64>,
     output_preview: PreviewTex,
     probe_preview: PreviewTex,
     bindings: Bindings,
@@ -141,6 +156,8 @@ pub(crate) struct Engine {
     capture_requests: Vec<PathBuf>,
     captures: Vec<Capture>,
     recording: Option<Recording>,
+    /// A movie of the output window being recorded (`Command::StartMovie`).
+    movie: Option<Recorder>,
 
     fields_rendered: u64,
     fields_dropped: u64,
@@ -154,6 +171,7 @@ pub(crate) struct Engine {
     field_intervals: IntervalTracker,
     present_intervals: IntervalTracker,
     debug_tv: bool,
+    capture_height: u32,
 }
 
 impl Engine {
@@ -171,6 +189,9 @@ impl Engine {
         let output_preview = PreviewTex::new(&device, &raster, "output preview");
         let probe_preview = PreviewTex::new(&device, &raster, "probe preview");
         let bindings = bind(&device, &runtime, &blitter, None);
+        let mut tube = Tube::new(&device);
+        tube.prepare(&device, gpu::PREVIEW_FORMAT);
+        tube.bind(&device, &raster, runtime.output_view(), runtime.yoke_view());
         let previews = Previews {
             output: output_preview.preview(&raster),
             probe: probe_preview.preview(&raster),
@@ -189,6 +210,9 @@ impl Engine {
             field: None,
             runtime,
             blitter,
+            tube,
+            tube_settings: None,
+            last_shown: None,
             output_preview,
             probe_preview,
             bindings,
@@ -198,6 +222,7 @@ impl Engine {
             capture_requests: Vec::new(),
             captures: Vec::new(),
             recording: None,
+            movie: None,
             fields_rendered: 0,
             fields_dropped: 0,
             fields_repeated: 0,
@@ -210,6 +235,11 @@ impl Engine {
             field_intervals: IntervalTracker::new(STATS_WINDOW),
             present_intervals: IntervalTracker::new(STATS_WINDOW),
             debug_tv: std::env::var_os("DOV_DEBUG_TV").is_some(),
+            capture_height: std::env::var("DOV_CAPTURE_HEIGHT")
+                .ok()
+                .and_then(|h| h.parse().ok())
+                .filter(|&h| (120..=8192).contains(&h))
+                .unwrap_or(CAPTURE_HEIGHT),
         };
         (engine, previews)
     }
@@ -238,10 +268,12 @@ impl Engine {
 
             let encode_start = Instant::now();
             let mut encoder = self.device.create_command_encoder(&Default::default());
-            match self.field {
+            // New fields rendered for this refresh.
+            let fresh = match self.field {
                 Some(last) if target <= last => {
                     self.fields_repeated += 1;
                     log::debug!("field {last} repeated");
+                    0
                 }
                 last => {
                     let advanced = last.map_or(0, |l| target - l);
@@ -253,9 +285,28 @@ impl Engine {
                     self.field = Some(target);
                     self.fields_rendered += 1;
                     self.field_intervals.tick(now);
+                    advanced.max(1)
                 }
+            };
+            if fresh > 0
+                && let Some(movie) = &mut self.movie
+            {
+                movie.encode(
+                    &self.device,
+                    self.queue.raw(),
+                    &mut encoder,
+                    &self.blitter,
+                    &self.runtime,
+                    target,
+                    fresh,
+                );
             }
-            let frame = frame.inspect(|frame| self.encode_output(&mut encoder, frame));
+            let shown = self.clock.position(shown_at);
+            let frame = frame.inspect(|frame| self.encode_output(&mut encoder, frame, target, fresh, shown));
+            if frame.is_none() {
+                self.last_shown = None;
+                self.tube_settings = None;
+            }
             let mut new_captures = Vec::new();
             for path in std::mem::take(&mut self.capture_requests) {
                 let display = path.with_file_name(format!(
@@ -263,7 +314,7 @@ impl Engine {
                     path.file_stem()
                         .map_or_else(String::new, |s| s.to_string_lossy().into_owned())
                 ));
-                new_captures.push(self.encode_display_capture(&mut encoder, display));
+                new_captures.push(self.encode_display_capture(&mut encoder, display, None));
                 new_captures.push(Capture::encode(
                     &self.device,
                     &mut encoder,
@@ -281,9 +332,15 @@ impl Engine {
                 capture.map();
             }
             self.captures.extend(new_captures);
-            if !self.captures.is_empty() {
+            if let Some(movie) = &mut self.movie {
+                movie.submitted();
+            }
+            if !self.captures.is_empty() || self.movie.as_ref().is_some_and(Recorder::busy) {
                 let _ = self.device.poll(wgpu::PollType::Poll);
                 self.captures.retain(|c| !c.try_finish());
+            }
+            if let Some(movie) = &mut self.movie {
+                movie.deliver();
             }
 
             self.presented = frame.is_some();
@@ -303,6 +360,10 @@ impl Engine {
             }
             self.publish_stats();
         }
+        // A movie being recorded is finished before the app quits.
+        if let Some(movie) = self.movie.take() {
+            movie.stop(&self.device, true);
+        }
         log::info!("engine stopped");
     }
 
@@ -319,7 +380,7 @@ impl Engine {
         self.field = Some(target);
         self.fields_rendered += 1;
         let path = rec.dir.join(format!("frame-{:05}.png", rec.done));
-        let capture = self.encode_display_capture(&mut encoder, path);
+        let capture = self.encode_display_capture(&mut encoder, path, Some(target));
         self.queue.submit([encoder.finish()]);
         self.runtime.after_submit();
         if let Err(e) = capture.finish_now(&self.device) {
@@ -341,6 +402,7 @@ impl Engine {
             match command {
                 Command::SetOutput { surface, config } => {
                     self.blitter.prepare(&self.device, config.format);
+                    self.tube.prepare(&self.device, config.format);
                     self.output = Some(Output {
                         surface,
                         config,
@@ -369,7 +431,7 @@ impl Engine {
                 Command::SetPatch(snapshot) => {
                     let start = Instant::now();
                     self.runtime.set_patch(&self.device, &snapshot);
-                    self.bindings = bind(&self.device, &self.runtime, &self.blitter, self.probe);
+                    self.rebind();
                     self.rebuild_screens();
                     log::debug!(
                         "patch: {} modules, {} passes, built in {:.2} ms",
@@ -392,6 +454,12 @@ impl Engine {
                         self.recording = Some(Recording { dir, total, done: 0 });
                     }
                 }
+                Command::StartMovie { path, codec } => self.start_movie(&path, codec),
+                Command::StopMovie => {
+                    if let Some(movie) = self.movie.take() {
+                        movie.stop(&self.device, false);
+                    }
+                }
                 Command::Shutdown => return false,
             }
         }
@@ -403,12 +471,17 @@ impl Engine {
             return;
         }
         self.raster = std;
+        // A movie can't change size or rate midway.
+        if let Some(movie) = self.movie.take_if(|m| m.raster() != std) {
+            movie.stop(&self.device, false);
+        }
         self.clock = FieldClock::new(&std);
         self.field = None;
         self.runtime.set_raster(&self.device, std);
         self.output_preview = PreviewTex::new(&self.device, &std, "output preview");
         self.probe_preview = PreviewTex::new(&self.device, &std, "probe preview");
-        self.bindings = bind(&self.device, &self.runtime, &self.blitter, self.probe);
+        self.rebind();
+        self.last_shown = None;
         self.rebuild_screens();
         self.field_intervals.reset();
         let previews = Previews {
@@ -533,47 +606,121 @@ impl Engine {
         }
     }
 
-    fn encode_output(&self, encoder: &mut wgpu::CommandEncoder, frame: &wgpu::SurfaceTexture) {
-        let Some(out) = &self.output else { return };
-        let view = frame.texture.create_view(&Default::default());
-        let uniforms = self.display_uniforms(out.config.width, out.config.height);
-        self.blitter.encode(
-            self.queue.raw(),
-            encoder,
-            &self.bindings.output,
-            out.config.format,
-            &view,
-            uniforms,
+    /// Rebinds everything that reads the patch's signals.
+    fn rebind(&mut self) {
+        self.bindings = bind(&self.device, &self.runtime, &self.blitter, self.probe);
+        self.tube.bind(
+            &self.device,
+            &self.raster,
+            self.runtime.output_view(),
+            self.runtime.yoke_view(),
         );
-    }
-
-    /// How the output window draws the picture, from the Output module's params.
-    fn display_uniforms(&self, width: u32, height: u32) -> gpu::BlitGpu {
-        let scale = gpu::letterbox(self.raster.display_aspect, width, height);
-        let Some(p) = self
-            .runtime
-            .output_params()
-            .filter(|p| p.len() >= 6 && p[0] >= 0.5)
-        else {
-            return gpu::BlitGpu::plain(scale);
-        };
-        let (w, h) = self.raster.active_size();
-        gpu::BlitGpu {
-            scale,
-            mode: 1.0,
-            mask_type: p[1].round(),
-            mask: p[2],
-            scanlines: p[3],
-            glow: p[4],
-            curvature: p[5],
-            src_size: [w as f32, h as f32],
-            dst_size: [width as f32, height as f32],
+        if let Some(movie) = &mut self.movie {
+            movie.rebind(&self.device, &self.blitter, &self.runtime);
         }
     }
 
+    /// Starts recording the output window to a movie at the capture height.
+    /// The UI hears when it's written, or that it couldn't be started.
+    fn start_movie(&mut self, path: &std::path::Path, codec: dov_io::Codec) {
+        if self.movie.is_some() {
+            return;
+        }
+        let events = self.events.clone();
+        let done = move |written| {
+            let _ = events.send(EngineEvent::MovieSaved(written));
+        };
+        match Recorder::start(
+            &self.device,
+            &mut self.blitter,
+            &self.runtime,
+            self.raster,
+            self.capture_height,
+            path,
+            codec,
+            done,
+        ) {
+            Ok(movie) => {
+                log::info!("recording a movie to {}", path.display());
+                self.movie = Some(movie);
+            }
+            Err(e) => {
+                log::error!("movie {}: {e}", path.display());
+                let _ = self.events.send(EngineEvent::MovieSaved(Err(e)));
+            }
+        }
+    }
+
+    /// Draws the output window: clean from an Output, or as a CRT's tube.
+    /// `fresh` new fields were rendered for this refresh, which is shown at
+    /// `shown` on the field clock.
+    fn encode_output(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &wgpu::SurfaceTexture,
+        target: u64,
+        fresh: u64,
+        shown: f64,
+    ) {
+        let Some(out) = &self.output else { return };
+        let (width, height, format) = (out.config.width, out.config.height, out.config.format);
+        let view = frame.texture.create_view(&Default::default());
+        let scale = gpu::letterbox(self.raster.display_aspect, width, height);
+        let last_shown = self.last_shown.replace(shown);
+        let Some(crt) = self.runtime.crt() else {
+            self.tube_settings = None;
+            self.blitter.encode(
+                self.queue.raw(),
+                encoder,
+                &self.bindings.output,
+                format,
+                &view,
+                gpu::BlitGpu::plain(scale),
+            );
+            return;
+        };
+        let refresh = tube::refresh(
+            crt.params[dov_modules::crt::SCAN] >= 0.5,
+            1.0 / (self.raster.field_rate_hz() * self.flywheel.period()),
+            shown,
+            last_shown,
+            target,
+            fresh,
+        );
+        let settings = tube::settings(
+            &crt,
+            &self.raster,
+            refresh.unwrap_or(Refresh::Hold { fields: 1 }),
+            target,
+        );
+        self.tube.update(self.queue.raw(), &settings);
+        self.tube_settings = Some(settings);
+        if refresh.is_some() {
+            self.tube.advance(encoder);
+        }
+        self.tube.draw(
+            &self.device,
+            self.queue.raw(),
+            encoder,
+            format,
+            &view,
+            ViewGpu {
+                scale,
+                size: [width as f32, height as f32],
+            },
+            true,
+        );
+    }
+
     /// Renders what the output window shows, at 1080 lines, for a capture.
-    fn encode_display_capture(&self, encoder: &mut wgpu::CommandEncoder, path: PathBuf) -> Capture {
-        let height = 1080;
+    /// Recording `Some(field)`, a CRT moves on a field at a time.
+    fn encode_display_capture(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        path: PathBuf,
+        recording: Option<u64>,
+    ) -> Capture {
+        let height = self.capture_height;
         let width = (height as f32 * self.raster.display_aspect).round() as u32;
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("display capture"),
@@ -590,16 +737,46 @@ impl Engine {
             view_formats: &[],
         });
         let view = texture.create_view(&Default::default());
-        let binding = self.blitter.bind(&self.device, self.runtime.output_view());
-        let uniforms = self.display_uniforms(width, height);
-        self.blitter.encode(
-            self.queue.raw(),
-            encoder,
-            &binding,
-            gpu::PREVIEW_FORMAT,
-            &view,
-            uniforms,
-        );
+        let scale = gpu::letterbox(self.raster.display_aspect, width, height);
+        match self.runtime.crt() {
+            None => {
+                let binding = self.blitter.bind(&self.device, self.runtime.output_view());
+                self.blitter.encode(
+                    self.queue.raw(),
+                    encoder,
+                    &binding,
+                    gpu::PREVIEW_FORMAT,
+                    &view,
+                    gpu::BlitGpu::plain(scale),
+                );
+            }
+            Some(crt) => {
+                // Captured alongside the window, the tube is as it showed
+                // there; otherwise it shows the latest fields.
+                let advance = match (recording, self.tube_settings) {
+                    (Some(field), _) => Some((Refresh::Hold { fields: 1 }, field)),
+                    (None, Some(_)) => None,
+                    (None, None) => Some((Refresh::Hold { fields: 2 }, self.field.unwrap_or(0))),
+                };
+                if let Some((refresh, field)) = advance {
+                    let settings = tube::settings(&crt, &self.raster, refresh, field);
+                    self.tube.update(self.queue.raw(), &settings);
+                    self.tube.advance(encoder);
+                }
+                self.tube.draw(
+                    &self.device,
+                    self.queue.raw(),
+                    encoder,
+                    gpu::PREVIEW_FORMAT,
+                    &view,
+                    ViewGpu {
+                        scale,
+                        size: [width as f32, height as f32],
+                    },
+                    false,
+                );
+            }
+        }
         Capture::encode(&self.device, encoder, &texture, path)
     }
 

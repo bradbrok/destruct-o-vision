@@ -10,6 +10,7 @@ use dov_core::{
 
 use crate::audio::AudioIn;
 use crate::behaviors::{Cable, Encoder, Lfo, Macros, Spin, Vco};
+use crate::crt::{self, Tube};
 use crate::midi::{self, MidiCc, MidiNotes};
 use crate::movie::MoviePlayer;
 use crate::{ModuleType, Origin};
@@ -59,6 +60,7 @@ static BUILTINS: &[Builtin] = &[
     Builtin::Rust(&MIDI_NOTES),
     Builtin::Rust(&MIDI_CC),
     file!("output.wgsl"),
+    Builtin::Rust(&CRT),
     file!("displace.wgsl"),
     file!("mirror.wgsl"),
     file!("mosaic.wgsl"),
@@ -361,6 +363,68 @@ static MIDI_CC: ModuleType = ModuleType {
 };
 
 // -------------------------------------------------------------------- i/o
+
+static CRT: ModuleType = ModuleType {
+    desc: ModuleDesc {
+        id: crt::ID,
+        name: "CRT",
+        category: Category::Io,
+        description: "A picture tube for the output window, in place of Output. An electron beam \
+                      sweeps the picture onto phosphors behind a mask and curved glass, at the \
+                      window's own resolution and refresh rate. With Scan on Beam, a display at a \
+                      whole multiple of the field rate (120 Hz for NTSC, 100 Hz for PAL) shows \
+                      each field drawn top to bottom as the beam does; other displays, and Hold, \
+                      show whole fields. Bright parts bloom the beam, Persist makes the phosphors \
+                      linger, and a Magnet leaves color blotches that stay until you degauss. H pos \
+                      and V pos take video-rate CV, so a VCO can bend the raster like a wobbulator.",
+        inputs: &[PortDesc::new("sig", "In", RGB)],
+        outputs: &[
+            PortDesc::new("out", "Out", RGB).hidden(),
+            PortDesc::new("yoke", "Yoke", RGB).hidden(),
+        ],
+        params: &[
+            ParamDesc::choice("power", "Power", &["Off", "On"])
+                .default_choice(1)
+                .control_cv(),
+            ParamDesc::choice("degauss", "Degauss", &["Push", "Thunk"]).control_cv(),
+            ParamDesc::choice("mask_type", "Mask", &["Grille", "Shadow", "Slot"]),
+            ParamDesc::choice("phosphor", "Phosphor", &["Color", "White", "Green", "Amber"]),
+            ParamDesc::choice("scan", "Scan", &["Beam", "Hold"]),
+            ParamDesc::knob("bright", "Bright", -0.5, 0.5, 0.0),
+            ParamDesc::knob("contrast", "Contrast", 0.0, 2.0, 1.0),
+            ParamDesc::knob("white", "White", 5000.0, 10000.0, 6500.0).unit("K"),
+            ParamDesc::knob("mask", "Mask amt", 0.0, 1.0, 0.5),
+            ParamDesc::knob("pitch", "Pitch", 200.0, 1200.0, 560.0).unit("triads"),
+            ParamDesc::knob("spot", "Spot", 0.0, 1.0, 0.25).control_cv(),
+            ParamDesc::knob("bloom", "Bloom", 0.0, 1.0, 0.5).control_cv(),
+            ParamDesc::knob("glow", "Halation", 0.0, 1.0, 0.3),
+            ParamDesc::knob("persist", "Persist", 0.0, 1.0, 0.0).control_cv(),
+            ParamDesc::knob("converge", "Converge", 0.0, 1.0, 0.15).control_cv(),
+            ParamDesc::knob("curvature", "Curve", 0.0, 1.0, 0.3).control_cv(),
+            ParamDesc::knob("overscan", "Overscan", 0.0, 15.0, 4.0).unit("%"),
+            ParamDesc::knob("room", "Room", 0.0, 1.0, 0.1),
+            ParamDesc::knob("magnet", "Magnet", -1.0, 1.0, 0.0).control_cv(),
+            ParamDesc::knob("h_pos", "H pos", -0.5, 0.5, 0.0).video_cv(),
+            ParamDesc::knob("v_pos", "V pos", -0.5, 0.5, 0.0).video_cv(),
+        ],
+        screen: false,
+        ring: None,
+        text: None,
+        kernel: Kernel::Pointwise(
+            r#"
+fn process(ctx: Ctx, inp: Inputs, p: Params) -> Outputs {
+    var o: Outputs;
+    o.out = inp.sig;
+    // Where the yoke throws each sample, CV and all, for the engine's tube.
+    o.yoke = vec3<f32>(p.h_pos, p.v_pos, 0.0);
+    return o;
+}
+"#,
+        ),
+    },
+    behavior: Some(|| Box::new(Tube::default())),
+    origin: Origin::BuiltIn,
+};
 
 // --------------------------------------------------------- gather kernels
 

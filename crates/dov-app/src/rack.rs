@@ -1,6 +1,7 @@
 //! The rack as the UI edits it: placed modules, their live params, cables,
 //! and undo history. Converts to patch files and to engine snapshots.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -46,6 +47,26 @@ pub struct Rack {
     requires: BTreeMap<String, String>,
 }
 
+/// Output's old display settings. Patches from before the CRT module chose
+/// a picture tube with Output's Display switch; they open with a CRT in its
+/// place, keeping the settings it shares.
+const OLD_DISPLAY: [&str; 6] = ["display", "mask_type", "mask", "scanlines", "glow", "curvature"];
+
+fn migrate(m: &ModuleState) -> Cow<'_, ModuleState> {
+    if m.kind != "dov.output" || !m.params.keys().any(|k| OLD_DISPLAY.contains(&k.as_str())) {
+        return Cow::Borrowed(m);
+    }
+    let mut m = m.clone();
+    if m.params.get("display").is_some_and(|&d| d >= 0.5) {
+        m.kind = dov_modules::crt::ID.into();
+        m.params
+            .retain(|k, _| matches!(k.as_str(), "mask_type" | "mask" | "glow" | "curvature"));
+    } else {
+        m.params.retain(|k, _| !OLD_DISPLAY.contains(&k.as_str()));
+    }
+    Cow::Owned(m)
+}
+
 impl Rack {
     pub fn from_patch(patch: &Patch) -> (Self, Vec<String>) {
         let mut rack = Self::default();
@@ -59,6 +80,7 @@ impl Rack {
         self.modules.clear();
         self.requires = patch.requires.clone();
         for m in &patch.modules {
+            let m = &*migrate(m);
             let ty = match dov_modules::find(&m.kind) {
                 Some(ty) => ty,
                 None => {
@@ -511,6 +533,28 @@ mod tests {
         assert_eq!(m.params.get(atten), -0.25);
         assert_eq!(loaded.cables.len(), 1);
         assert_eq!(loaded.snapshot().cables.len(), 1);
+    }
+
+    #[test]
+    fn an_old_crt_output_opens_as_a_crt() {
+        let patch = Patch::from_ron(
+            r#"(modules: [
+                (id: (1), kind: "dov.vco", pos: (0, 0)),
+                (id: (2), kind: "dov.output", pos: (0, 8),
+                 params: {"display": 1.0, "mask_type": 2.0, "glow": 0.45, "scanlines": 0.8}),
+                (id: (3), kind: "dov.output", pos: (1, 0), params: {"display": 0.0, "glow": 0.3}),
+            ], cables: [(from: (module: (1), port: "out"), to: (module: (2), port: "sig"))])"#,
+        )
+        .unwrap();
+        let (rack, warnings) = Rack::from_patch(&patch);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let crt = rack.module(ModuleId(2)).unwrap();
+        assert_eq!(crt.ty.desc.id, dov_modules::crt::ID);
+        let desc = &crt.ty.desc;
+        assert_eq!(crt.params.get(desc.param_index("mask_type").unwrap()), 2.0);
+        assert_eq!(crt.params.get(desc.param_index("glow").unwrap()), 0.45);
+        assert_eq!(rack.snapshot().cables.len(), 1, "the cable still reaches it");
+        assert_eq!(rack.module(ModuleId(3)).unwrap().ty.desc.id, "dov.output");
     }
 
     #[test]

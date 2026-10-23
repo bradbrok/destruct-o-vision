@@ -28,6 +28,17 @@ to cut the movie into splices; Organize and Next pick the splice that plays.
 Patches remember where the file is, so keep movies where they were when you
 saved.
 
+RECORDING
+Output > Record movie (Cmd+R) records the output window, as it shows, to a
+movie in Documents/Destruct-O-Vision/captures while you play. Cmd+R again
+stops it. H.264 makes a small MP4; ProRes keeps every scan line for editing.
+
+PICTURE TUBE
+Output shows the picture clean. Put a CRT in its place to see it on a picture
+tube: scan lines, phosphor mask, glow and curved glass. With Scan on Beam, a
+display at 120 Hz (100 Hz for PAL) shows each field drawn top to bottom. Try
+the Magnet, then Degauss.
+
 EXAMPLE MODULES
 Copy the folders in "Example Modules" into Documents/Destruct-O-Vision/modules
 (Modules > Open modules folder). They load right away:

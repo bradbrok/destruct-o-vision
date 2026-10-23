@@ -53,6 +53,8 @@ usage: destructovision [options]
   --record DIR           render the output as numbered PNGs in DIR (every field, offline
                          and smooth, as shown on the display), then quit
   --record-seconds SECS  how much to record (default 10)
+  --movie SECS           record a movie of the output as it plays, as Output > Record movie
+                         does, for SECS, then quit
   --modules DIR          load user modules from DIR (default: ./modules, or
                          ~/Documents/Destruct-O-Vision/modules for the app bundle)
 
@@ -71,6 +73,7 @@ struct Options {
     modules: Option<PathBuf>,
     record: Option<PathBuf>,
     record_seconds: f32,
+    movie: Option<f32>,
 }
 
 impl Options {
@@ -108,6 +111,7 @@ impl Options {
                 "--modules" => opts.modules = Some(PathBuf::from(value()?)),
                 "--record" => opts.record = Some(PathBuf::from(value()?)),
                 "--record-seconds" => opts.record_seconds = secs()?,
+                "--movie" => opts.movie = Some(secs()?),
                 "-h" | "--help" => return Err(String::new()),
                 other => return Err(format!("unknown option '{other}'")),
             }
@@ -253,6 +257,10 @@ struct AppState {
     modules: modules::UserModules,
     /// A `--record` run has finished: quit.
     recorded: bool,
+    /// The movie being recorded, and since when.
+    movie: Option<(PathBuf, Instant)>,
+    /// A `--movie` run: whether it has started and been stopped.
+    scripted_movie: (bool, bool),
 }
 
 impl AppState {
@@ -375,6 +383,8 @@ impl AppState {
             snapshot_taken: false,
             quitting: false,
             ui_snapshot: None,
+            movie: None,
+            scripted_movie: (false, false),
             ui_captures: Vec::new(),
             modules: user_modules,
             recorded: false,
@@ -529,6 +539,19 @@ impl AppState {
             self.snapshot_taken = true;
             self.apply(UiAction::Snapshot);
         }
+        if let Some(seconds) = options.movie {
+            match self.scripted_movie {
+                (false, _) => {
+                    self.scripted_movie.0 = true;
+                    self.apply(UiAction::StartMovie(dov_io::Codec::H264));
+                }
+                (true, false) if elapsed >= seconds => {
+                    self.scripted_movie.1 = true;
+                    self.apply(UiAction::StopMovie);
+                }
+                _ => {}
+            }
+        }
         if self.recorded || options.quit_after.is_some_and(|t| elapsed >= t) {
             self.quit(event_loop);
         }
@@ -646,6 +669,28 @@ impl AppState {
                     .send(Command::Capture(dir.join(format!("dov-{ms}.png"))));
                 self.ui_snapshot = Some(dir.join(format!("dov-{ms}-ui.png")));
             }
+            UiAction::StartMovie(codec) => {
+                if self.movie.is_none() {
+                    let ms = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map_or(0, |d| d.as_millis());
+                    let path = ui::data_dir()
+                        .join("captures")
+                        .join(format!("dov-{ms}.{}", codec.extension()));
+                    self.engine.send(Command::StartMovie {
+                        path: path.clone(),
+                        codec,
+                    });
+                    self.set_status(format!("Recording to {}", path.display()));
+                    self.movie = Some((path, Instant::now()));
+                }
+            }
+            UiAction::StopMovie => {
+                if self.movie.is_some() {
+                    self.engine.send(Command::StopMovie);
+                    self.set_status("Finishing the movie…");
+                }
+            }
             UiAction::NewPatch => {
                 self.rack = demo::empty();
                 self.ui.rack_view.fit();
@@ -748,6 +793,26 @@ impl AppState {
 
         while let Some(event) = self.engine.try_event() {
             match event {
+                EngineEvent::MovieSaved(saved) => {
+                    self.movie = None;
+                    match saved {
+                        Ok(w) => {
+                            let dropped = match w.dropped {
+                                0 => String::new(),
+                                n => format!(", {n} dropped keeping up"),
+                            };
+                            self.set_status(format!(
+                                "Saved {} ({} frames{dropped})",
+                                w.path.display(),
+                                w.frames
+                            ));
+                        }
+                        Err(e) => self.set_status(format!("Couldn't record the movie: {e}")),
+                    }
+                    if self.scripted_movie.1 {
+                        self.recorded = true;
+                    }
+                }
                 EngineEvent::Recorded(dir, frames) => {
                     self.set_status(format!("Recorded {frames} frames to {}", dir.display()));
                     self.recorded = true;
@@ -837,6 +902,7 @@ impl AppState {
             output_shown: self.output.shown,
             ui_frames: self.ui_frames.summary(),
             status: self.status.as_ref().map(|(s, _)| s.as_str()),
+            movie: self.movie.as_ref().map(|(_, since)| since.elapsed()),
             modules: ui::ModulesView {
                 dir: &self.modules.dir,
                 count: self.modules.count(),

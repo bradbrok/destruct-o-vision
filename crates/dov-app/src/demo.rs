@@ -179,7 +179,7 @@ pub fn analog() -> Rack {
     let cable = add("dov.cable", 1);
     let inject = add("dov.inject", 1);
     let tv = add("dov.tv", 1);
-    let output = add("dov.output", 1);
+    let output = add("dov.crt", 1);
     let wobble = add("dov.vco", 2);
     let macros = add("dov.macros", 2);
 
@@ -193,7 +193,6 @@ pub fn analog() -> Rack {
     set(&rack, wobble, "detune", 0.5);
     set(&rack, inject, "amount", 0.0);
     set_cv(&rack, inject, "amount", 1.0);
-    set(&rack, output, "display", 1.0);
 
     for (from, out, to, inp) in [
         (vco_a, "out", mixer, "a"),
@@ -339,7 +338,7 @@ pub fn lab() -> Rack {
     let mixer = add("dov.mixer", 1);
     let feedback = add("dov.feedback", 1);
     let keyer = add("dov.keyer", 1);
-    let output = add("dov.output", 1);
+    let output = add("dov.crt", 1);
 
     set(&rack, vco, "range", 1.0);
     set(&rack, vco, "multiple", 10.0);
@@ -359,7 +358,6 @@ pub fn lab() -> Rack {
     set(&rack, feedback, "rotate", 0.0);
     set_cv(&rack, feedback, "rotate", 0.25);
     set(&rack, feedback, "decay", 0.9);
-    set(&rack, output, "display", 1.0);
 
     for (from, out, to, inp) in [
         (vco, "out", stripes, "sig"),
@@ -415,7 +413,7 @@ pub fn showcase() -> Rack {
     let wobble = add("dov.lfo", 2);
     let vcr = add("dov.vcr", 2);
     let tv = add("dov.tv", 2);
-    let output = add("dov.output", 2);
+    let output = add("dov.crt", 2);
 
     // Broad, smooth color bands: composite video carries color at a much
     // lower resolution than brightness, so fine stripes would come out of
@@ -480,7 +478,6 @@ pub fn showcase() -> Rack {
     set(&rack, vcr, "dropouts", 0.3);
     set(&rack, encoder, "chroma", 1.2);
     set(&rack, tv, "saturation", 1.4);
-    set(&rack, output, "display", 1.0);
     set(&rack, output, "glow", 0.45);
     set(&rack, output, "curvature", 0.5);
 

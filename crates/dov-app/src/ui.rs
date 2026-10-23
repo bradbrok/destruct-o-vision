@@ -40,6 +40,9 @@ pub enum UiAction {
     Fullscreen(usize),
     Windowed,
     Snapshot,
+    /// Record the output window to a movie, or stop.
+    StartMovie(dov_io::Codec),
+    StopMovie,
     NewPatch,
     LoadShowcase,
     LoadDemo,
@@ -68,6 +71,8 @@ pub struct FrameData<'a> {
     pub ui_frames: IntervalSummary,
     pub status: Option<&'a str>,
     pub modules: ModulesView<'a>,
+    /// How long the movie being recorded has run.
+    pub movie: Option<std::time::Duration>,
 }
 
 /// The user's modules folder, for the Modules menu.
@@ -96,7 +101,7 @@ impl AppUi {
         f: &FrameData,
         actions: &mut Vec<UiAction>,
     ) -> Option<(ModuleId, usize)> {
-        self.shortcuts(ui, rack, actions);
+        self.shortcuts(ui, rack, f.movie, actions);
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui, rack, f, actions));
         egui::Panel::bottom("status").show(ui, |ui| status_line(ui, rack, f));
         egui::Panel::right("monitor").default_size(300.0).show(ui, |ui| {
@@ -111,7 +116,13 @@ impl AppUi {
         probe
     }
 
-    fn shortcuts(&mut self, ui: &mut Ui, rack: &mut Rack, actions: &mut Vec<UiAction>) {
+    fn shortcuts(
+        &mut self,
+        ui: &mut Ui,
+        rack: &mut Rack,
+        movie: Option<std::time::Duration>,
+        actions: &mut Vec<UiAction>,
+    ) {
         let shortcut =
             |ui: &mut Ui, mods, key| ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(mods, key)));
         if shortcut(ui, Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) {
@@ -121,6 +132,12 @@ impl AppUi {
         }
         if shortcut(ui, Modifiers::COMMAND, Key::S) {
             actions.push(UiAction::Save);
+        }
+        if shortcut(ui, Modifiers::COMMAND, Key::R) {
+            actions.push(match movie {
+                Some(_) => UiAction::StopMovie,
+                None => UiAction::StartMovie(dov_io::Codec::H264),
+            });
         }
         let typing = ui.ctx().egui_wants_keyboard_input();
         if !typing
@@ -305,6 +322,43 @@ impl AppUi {
                     actions.push(UiAction::Snapshot);
                     ui.close();
                 }
+                match f.movie {
+                    Some(running) => {
+                        let stop = egui::Button::new(format!("Stop recording ({})", clock(running)))
+                            .shortcut_text(
+                                ui.ctx()
+                                    .format_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::R)),
+                            );
+                        if ui.add(stop).clicked() {
+                            actions.push(UiAction::StopMovie);
+                            ui.close();
+                        }
+                    }
+                    None => {
+                        let h264 = egui::Button::new("Record movie (H.264)").shortcut_text(
+                            ui.ctx()
+                                .format_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::R)),
+                        );
+                        if ui
+                            .add(h264)
+                            .on_hover_text(
+                                "A small MP4 that plays anywhere, of the output window as it shows",
+                            )
+                            .clicked()
+                        {
+                            actions.push(UiAction::StartMovie(dov_io::Codec::H264));
+                            ui.close();
+                        }
+                        if ui
+                            .button("Record movie (ProRes)")
+                            .on_hover_text("A big QuickTime movie that keeps every scan line, for editing")
+                            .clicked()
+                        {
+                            actions.push(UiAction::StartMovie(dov_io::Codec::ProRes));
+                            ui.close();
+                        }
+                    }
+                }
             });
         });
     }
@@ -449,6 +503,14 @@ fn status_line(ui: &mut Ui, rack: &Rack, f: &FrameData) {
             rack.cables.len()
         ));
         ui.separator();
+        if let Some(running) = f.movie {
+            // A drawn dot: the UI font has no circle.
+            let red = egui::Color32::from_rgb(235, 70, 60);
+            let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+            ui.painter().circle_filled(dot.center(), 4.5, red);
+            ui.colored_label(red, format!("REC {}", clock(running)));
+            ui.separator();
+        }
         match f.status {
             Some(status) => ui.label(status),
             None => ui.weak(
@@ -457,6 +519,12 @@ fn status_line(ui: &mut Ui, rack: &Rack, f: &FrameData) {
             ),
         };
     });
+}
+
+/// Minutes and seconds.
+fn clock(d: std::time::Duration) -> String {
+    let s = d.as_secs();
+    format!("{}:{:02}", s / 60, s % 60)
 }
 
 fn row(ui: &mut Ui, label: &str, value: String) {
@@ -500,4 +568,25 @@ fn sparkline(ui: &mut Ui, samples_ms: &[f32], expected_ms: f32) {
         points,
         Stroke::new(1.5, Color32::from_rgb(255, 120, 60)),
     ));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_record_shortcut_and_clock_read_right() {
+        let ctx = egui::Context::default();
+        ctx.run_ui(egui::RawInput::default(), |_| {})
+            .drop_without_applying_deltas();
+        let shortcut = ctx.format_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::R));
+        let font = egui::FontId::proportional(14.0);
+        for c in shortcut.chars() {
+            assert!(
+                ctx.fonts_mut(|f| f.has_glyph(&font, c)),
+                "{c} in {shortcut} has no glyph"
+            );
+        }
+        assert_eq!(clock(std::time::Duration::from_secs(75)), "1:15");
+    }
 }

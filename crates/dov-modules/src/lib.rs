@@ -10,6 +10,7 @@
 
 mod audio;
 mod behaviors;
+pub mod crt;
 mod files;
 mod library;
 mod midi;
