@@ -242,6 +242,18 @@ pub enum Kernel {
     /// `fn process(ctx, inp, p, state: ptr<function, State>) -> Outputs` plus
     /// `fn init_state() -> State`. Horizontal filters, slew, integrators.
     LineScan(&'static str),
+    /// Per-sample WGSL in several passes, for work a sample would otherwise
+    /// repeat for all its neighbors. Each entry of `stages` is a pass before
+    /// the last, `fn stage<k>(ctx, inp, p) -> vec4<f32>`, run once per
+    /// sample (1) or once per n×n block of samples (n). Its results are
+    /// kept for the field, and later passes read them with
+    /// `stage_at(k, x, y)`: at a sample's `x` and row, or a block's column
+    /// and row in the block grid. The last pass is `process`, as for
+    /// `Pointwise`. Built-ins only, for now.
+    Staged {
+        source: &'static str,
+        stages: &'static [u32],
+    },
     /// Frame store with a geometric transform; its output is last field's
     /// input, so it closes feedback loops without an inserted delay.
     Feedback,
@@ -280,17 +292,19 @@ pub enum Category {
     Color,
     Space,
     Analog,
+    Glitch,
     Control,
     Io,
 }
 
 impl Category {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Source,
         Self::Process,
         Self::Color,
         Self::Space,
         Self::Analog,
+        Self::Glitch,
         Self::Control,
         Self::Io,
     ];
@@ -302,6 +316,7 @@ impl Category {
             Self::Color => "Color",
             Self::Space => "Space & time",
             Self::Analog => "Analog signal path",
+            Self::Glitch => "Digital glitch",
             Self::Control => "Control",
             Self::Io => "I/O",
         }

@@ -11,6 +11,13 @@ pub const OUTPUT_BINDING_BASE: u32 = 16;
 pub const RING_BINDING: u32 = 24;
 pub const TEXT_BINDING: u32 = 25;
 pub const TEXT_SAMPLER_BINDING: u32 = 26;
+/// Earlier stages of a staged kernel, read with `stage_at`: stage `k` is at
+/// `STAGE_BINDING_BASE + k`.
+pub const STAGE_BINDING_BASE: u32 = 27;
+/// Where a stage writes its results.
+pub const STAGE_WRITE_BINDING: u32 = 31;
+/// Passes a staged kernel can have before its last.
+pub const MAX_STAGES: usize = 4;
 /// Inputs, counting the jacks generated for CV.
 pub const MAX_INPUTS: usize = 15;
 pub const MAX_OUTPUTS: usize = 4;
@@ -170,10 +177,26 @@ fn port_type(kind: PortKind) -> &'static str {
     }
 }
 
+/// Which pass of a kernel a shader runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pass {
+    /// `process`: a module's only pass, or the last after `stages` earlier ones.
+    Process { stages: usize },
+    /// `stage<index>` of a staged kernel, once per `block`×`block` samples.
+    Stage { index: usize, block: u32 },
+}
+
 /// The complete compute shader for a module: its own code first, so compile
 /// errors point at the author's line numbers, then the glue. WGSL resolves
 /// module-scope declarations in any order.
 pub fn shader(iface: &Interface, body: &str) -> String {
+    pass_shader(iface, body, Pass::Process { stages: 0 })
+}
+
+/// The shader for one pass of a module's kernel. Every pass of a staged
+/// kernel compiles the same code; each runs its own entry function and
+/// reads the stages before it.
+pub fn pass_shader(iface: &Interface, body: &str, pass: Pass) -> String {
     let inputs = iface.inputs_full();
     let line_scan = iface.kernel == KernelKind::LineScan;
 
@@ -269,6 +292,30 @@ fn text_sdf(p: vec2<f32>) -> f32 {{
         );
     }
 
+    // Staged kernels: `stage_at(k, x, y)` reads what stage `k` stored, for
+    // the stages run before this pass, and zero for the rest.
+    let (staged, readable) = match pass {
+        Pass::Process { stages } => (stages > 0, stages),
+        Pass::Stage { index, .. } => (true, index),
+    };
+    if staged {
+        for k in 0..readable {
+            let _ = writeln!(
+                s,
+                "@group(0) @binding({}) var dov_stage_{k}: texture_2d<f32>;",
+                STAGE_BINDING_BASE + k as u32
+            );
+        }
+        s.push_str("\nfn stage_at(k: u32, x: i32, y: i32) -> vec4<f32> {\n    switch k {\n");
+        for k in 0..readable {
+            let _ = writeln!(
+                s,
+                "        case {k}u: {{\n            let last = vec2<i32>(textureDimensions(dov_stage_{k})) - vec2<i32>(1);\n            return textureLoad(dov_stage_{k}, clamp(vec2<i32>(x, y), vec2<i32>(0), last), 0);\n        }}"
+            );
+        }
+        s.push_str("        default: {\n            return vec4<f32>(0.0);\n        }\n    }\n}\n");
+    }
+
     // Per declared input: `fetch_<input>(x, row)` reads it anywhere in the
     // woven frame, clamped to the edges (lines of the current field are
     // `ctx.stride` rows apart), and `patched_<input>()` says whether a video
@@ -329,6 +376,27 @@ fn patched_{id}() -> bool {{
             }
         };
         let _ = writeln!(sample, "        p.{} = {value};", p.id);
+    }
+    if let Pass::Stage { index, block } = pass {
+        let at = if block > 1 { "gid.xy" } else { "coord" };
+        let _ = write!(
+            s,
+            r#"
+@group(0) @binding({STAGE_WRITE_BINDING}) var dov_stage_out: texture_storage_2d<rgba32float, write>;
+
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
+    if (gid.x * {block}u >= u.info.width || gid.y * {block}u >= u.info.lines) {{
+        return;
+    }}
+    {{
+        let ctx = make_ctx(gid.x * {block}u, gid.y * {block}u);
+{sample}        textureStore(dov_stage_out, {at}, stage{index}(ctx, inp, p));
+    }}
+}}
+"#
+        );
+        return s;
     }
     if line_scan {
         let _ = writeln!(sample, "        let o = process(ctx, inp, p, &state);");

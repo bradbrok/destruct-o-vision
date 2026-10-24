@@ -54,6 +54,7 @@ pub enum UiAction {
     LoadAnalogDemo,
     LoadTimeDemo,
     LoadLabDemo,
+    LoadGlitchDemo,
     OpenModulesFolder,
     ReloadModules,
     NewModule,
@@ -185,6 +186,10 @@ impl AppUi {
                 }
                 if ui.button("3D & text demo").clicked() {
                     actions.push(UiAction::LoadLabDemo);
+                    ui.close();
+                }
+                if ui.button("Glitch demo").clicked() {
+                    actions.push(UiAction::LoadGlitchDemo);
                     ui.close();
                 }
                 if ui.button("Camera demo").clicked() {

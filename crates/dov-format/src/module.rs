@@ -48,6 +48,7 @@ pub enum Category {
     Process,
     Color,
     Space,
+    Glitch,
     Control,
     Io,
 }
@@ -241,11 +242,12 @@ fn validate(h: Header, source: &str, errors: &mut Vec<String>) -> Option<Module>
         "process" => Some(Category::Process),
         "color" => Some(Category::Color),
         "space" => Some(Category::Space),
+        "glitch" => Some(Category::Glitch),
         "control" => Some(Category::Control),
         "io" => Some(Category::Io),
         other => {
             err(format!(
-                "category `{other}` must be source, process, color, space, control or io"
+                "category `{other}` must be source, process, color, space, glitch, control or io"
             ));
             None
         }

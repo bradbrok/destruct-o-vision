@@ -110,6 +110,7 @@ fn desc(m: f::Module) -> ModuleDesc {
             f::Category::Process => Category::Process,
             f::Category::Color => Category::Color,
             f::Category::Space => Category::Space,
+            f::Category::Glitch => Category::Glitch,
             f::Category::Control => Category::Control,
             f::Category::Io => Category::Io,
         },

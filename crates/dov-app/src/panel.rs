@@ -392,6 +392,7 @@ pub fn category_color(c: Category) -> Color32 {
         Category::Color => Color32::from_rgb(208, 74, 154),
         Category::Space => Color32::from_rgb(86, 128, 222),
         Category::Analog => Color32::from_rgb(120, 210, 120),
+        Category::Glitch => Color32::from_rgb(156, 102, 238),
         Category::Control => Color32::from_rgb(216, 192, 64),
         Category::Io => Color32::from_rgb(170, 170, 170),
     }

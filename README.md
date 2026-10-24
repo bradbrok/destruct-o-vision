@@ -14,18 +14,21 @@ The showcase patch, which the app opens with, works like this:
 
 The tearing, noise bars and soft color all come from the emulated signal, not from a filter. [Watch the full demo video](https://github.com/bradbrok/destruct-o-vision/releases/download/v0.1.1/destruct-o-vision-demo.mp4) (15 s, 60 fps).
 
-**Status: pre-alpha.** The app has a VCV-style rack: modules sit on rails, and you patch them with cables. It ships with 42 modules:
+**Status: pre-alpha.** The app has a VCV-style rack: modules sit on rails, and you patch them with cables. It ships with 51 modules:
 - **Sources:** VCO, Ramps, Shape, Noise, a live Camera and a Movie player (macOS), Text, 3D Text, and 3D Object
 - **Processing:** Mixer, Blend (two inputs, all of Photoshop's blend modes), VCA, Folder, Keyer, Chroma Key, a line-scan Filter, Blur (its radius takes video-rate CV, for blurring parts of the picture), Edge, Posterize
 - **Color:** Colorize, RGB Combine/Split
-- **Space & time:** Feedback frame store, Delay (echo, freeze, and slit-scan through its Time CV), Displace, Mirror, Mosaic, Tile (repeat, mirror or brick grids that scroll)
+- **Space & time:** Feedback frame store, Delay (echo, freeze, and slit-scan through its Time CV), Displace, Mirror, Mosaic, Tile (repeat, mirror or brick grids that scroll), Transform (zoom, rotate, stretch, move), Warp (swirl, bulge, ripple, wave), Polar (planet, tunnel, unwrap), Kaleido
 - **Analog signal path:** Encoder, Inject, Cable, VCR, TBC, TV
+- **Digital glitch:** Datamosh, Pixel Sort, JPEG (real compression, and corruption), Slice (tearing), Bits (bitwise ops between pictures)
 - **Control:** LFO (Hz, or a note value on the global tempo; Trig output), Macros, Audio In (any connected input and channel, picked by name; a resonant low/band/high-pass filter into an envelope follower, with Gate and Trig), MIDI Notes (pitch, gate, velocity, trigger), MIDI CC (four controllers, with learn)
 - **I/O:** Monitor, Output, CRT
 
 **Movies.** Movie plays a movie file (anything QuickTime opens: H.264, HEVC, ProRes) in a loop from In to Out. Speed runs from 4× backward to 4× forward. Loop, Bounce or Once sets what happens at the ends. In Scrub mode, Position picks the frame, so an LFO or Audio In can scrub through the clip. FPS holds frames for a stop-motion look, and BPM sync fits the loop to a note value on the beat grid. Click the file row to choose a movie, or drop movie files onto the rack.
 
 Click a Movie's picture to open its editor. Its timeline zooms in to single frames, so you can drag In and Out onto exactly the frame you want, hold the picture and step through it, or scrub. The editor also cuts the movie into splices, as on a Morphagene: Organize (knob and CV) picks the splice to play, Next steps on to the following one, and In and Out trim whichever splice is playing. Keys: space holds, the arrows step a frame (10 with shift), I and O set In and Out, S cuts a splice. Frames are decoded ahead of the playhead and kept in memory, so after its first pass a loop plays from memory, backward too.
+
+**Warps and glitches.** Every knob on the warps takes video-rate CV, so a ramp into Transform's Rotate twists the picture and noise into Warp's Amount crumples it. Datamosh finds the motion in its input block by block and drags the old picture along with it, so a cut turns into a melt; turn Keyframe on to show the input clean, and off to start moshing. Pixel Sort sorts runs of pixels by brightness, hue, saturation or any signal patched into Key, in any of four directions. JPEG compresses each field for real, and Corrupt damages it the way a bad bit in a file does.
 
 **3D and text.** 3D Object and 3D Text are raymarched per pixel, so a video signal patched into their rotation, twist or size CVs bends them line by line, and video patched into Tex paints their surfaces. Text renders whatever you type on its panel as a fill, outline, glow or contour bands, in system fonts.
 
@@ -60,6 +63,7 @@ Built-in demo patches (also on the File menu):
 - `--demo analog`
 - `--demo time` (delays and chroma key)
 - `--demo lab` (3D text over swirling feedback, with video driving a control jack)
+- `--demo glitch` (a spinning torus datamoshed between keyframes on each bar, then pixel-sorted, JPEG-crushed and torn)
 - `--demo camera`
 - `--demo audio` (the kick drum pumps a feedback tunnel; the hi-hats fold the oscillators)
 - `--demo tv:vcr,cable`, a minimal Encoder → stages → TV chain
@@ -133,7 +137,7 @@ Destruct-O-Vision is free software under the [GNU General Public License v3.0 or
 The module format is under the [MIT License](LICENSE-MIT), so module authors and other hosts can use it freely. That covers:
 - the `dov-format` crate, which parses and checks module files and generates the glue around them, standard WGSL library included
 - the built-in module files in `crates/dov-modules/modules`
-- the WGSL kernels in `crates/dov-modules/src/library.rs`, which are marked there
+- the WGSL kernels in `crates/dov-modules/src/library.rs`, which are marked there, and in `crates/dov-modules/src/kernels`
 
 Modules you write are yours, under whatever license you choose. They are data the app loads, not part of the app.
 

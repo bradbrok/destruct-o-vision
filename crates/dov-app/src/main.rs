@@ -43,7 +43,7 @@ const USAGE: &str = "\
 usage: destructovision [options]
   --patch FILE           open a patch (default: the demo patch)
   --demo NAME            start from a built-in patch: showcase (the default) | feedback | analog |
-                         time | lab | camera | audio | empty,
+                         time | lab | glitch | camera | audio | empty,
                          or tv[:stage,...], e.g. tv:vcr,cable (Encoder -> stages -> TV)
   --set TYPE:PARAM=VAL   set a param on every module of a type, e.g. dov.vcr:tracking=0.5
   --raster NAME          ntsc | pal | 720p | 1080p (default ntsc)
@@ -372,6 +372,7 @@ impl AppState {
                 Some("analog") => demo::analog(),
                 Some("time") => demo::time(),
                 Some("lab") => demo::lab(),
+                Some("glitch") => demo::glitch(),
                 Some(d) if d == "tv" || d.starts_with("tv:") => {
                     let stages: Vec<String> = d
                         .strip_prefix("tv:")
@@ -800,6 +801,10 @@ impl AppState {
             }
             UiAction::LoadLabDemo => {
                 self.rack = demo::lab();
+                self.ui.rack_view.fit();
+            }
+            UiAction::LoadGlitchDemo => {
+                self.rack = demo::glitch();
                 self.ui.rack_view.fit();
             }
             UiAction::LoadAnalogDemo => {

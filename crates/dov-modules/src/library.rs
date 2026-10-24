@@ -5,7 +5,7 @@
 //! the file is GPL-3.0-or-later like the rest of the app.
 
 use dov_core::{
-    Category, CompositeOp, FONTS, Kernel, Live, ModuleDesc, ParamDesc, PortDesc, PortKind, TextSpec,
+    Category, CompositeOp, FONTS, Kernel, Live, ModuleDesc, ParamDesc, PortDesc, PortKind, RingSpec, TextSpec,
 };
 
 use crate::audio::AudioIn;
@@ -65,6 +65,10 @@ static BUILTINS: &[Builtin] = &[
     file!("mirror.wgsl"),
     file!("mosaic.wgsl"),
     file!("tile.wgsl"),
+    file!("transform.wgsl"),
+    file!("warp.wgsl"),
+    file!("polar.wgsl"),
+    file!("kaleido.wgsl"),
     file!("blur.wgsl"),
     file!("edge.wgsl"),
     file!("posterize.wgsl"),
@@ -79,6 +83,11 @@ static BUILTINS: &[Builtin] = &[
     Builtin::Rust(&TV),
     file!("delay.wgsl"),
     file!("chromakey.wgsl"),
+    Builtin::Rust(&DATAMOSH),
+    Builtin::Rust(&PIXEL_SORT),
+    Builtin::Rust(&JPEG),
+    file!("slice.wgsl"),
+    file!("bits.wgsl"),
     Builtin::Rust(&OBJECT),
     file!("text.wgsl"),
     Builtin::Rust(&TEXT_3D),
@@ -172,6 +181,120 @@ static FEEDBACK: ModuleType = ModuleType {
         ring: None,
         text: None,
         kernel: Kernel::Feedback,
+    },
+    behavior: None,
+    origin: Origin::BuiltIn,
+};
+
+// ----------------------------------------------------------------- glitch
+
+static DATAMOSH: ModuleType = ModuleType {
+    desc: ModuleDesc {
+        id: "dov.datamosh",
+        name: "Datamosh",
+        category: Category::Glitch,
+        description: "Video compression with the keyframes cut out. Each block finds where its \
+                      part of the input moved and drags the old picture along with it, so a new \
+                      scene never quite arrives: the old one smears and melts in the new one's \
+                      motion. Keyframe On shows the input clean, and turning it off starts the \
+                      mosh from there. Bleed lets the input seep back in, Refresh redraws random \
+                      blocks, Motion scales the movement found, and Drift pushes every block \
+                      along.",
+        inputs: &[PortDesc::new("sig", "In", RGB)],
+        outputs: &[
+            PortDesc::new("out", "Out", RGB),
+            PortDesc::new("write", "Write", RGB).hidden(),
+        ],
+        params: &[
+            ParamDesc::choice("keyframe", "Keyframe", &["Off", "On"]).control_cv(),
+            ParamDesc::choice("block", "Block", &["8", "16", "32"]).default_choice(1),
+            ParamDesc::knob("motion", "Motion", 0.0, 4.0, 1.0).video_cv(),
+            ParamDesc::knob("bleed", "Bleed", 0.0, 1.0, 0.1).video_cv(),
+            ParamDesc::knob("refresh", "Refresh", 0.0, 1.0, 0.0).video_cv(),
+            ParamDesc::knob("drift_x", "Drift X", -8.0, 8.0, 0.0)
+                .unit("px")
+                .video_cv(),
+            ParamDesc::knob("drift_y", "Drift Y", -8.0, 8.0, 0.0)
+                .unit("lines")
+                .video_cv(),
+        ],
+        screen: false,
+        ring: Some(RingSpec {
+            output: 1,
+            freeze_param: None,
+            fields: 1,
+        }),
+        text: None,
+        kernel: Kernel::Staged {
+            source: include_str!("kernels/datamosh.wgsl"),
+            stages: &[8],
+        },
+    },
+    behavior: None,
+    origin: Origin::BuiltIn,
+};
+
+static PIXEL_SORT: ModuleType = ModuleType {
+    desc: ModuleDesc {
+        id: "dov.pixelsort",
+        name: "Pixel Sort",
+        category: Category::Glitch,
+        description: "Sorts runs of pixels by brightness, hue or saturation, or by a signal \
+                      patched into Key. Only pixels whose value lies between Low and High are \
+                      sorted, so bright parts melt into streaks while the rest stays put. Dir is \
+                      where the highest values end up; Length caps how far a run reaches. Low \
+                      and High take video CV.",
+        inputs: &[PortDesc::new("sig", "In", RGB), PortDesc::new("key", "Key", MONO)],
+        outputs: &[PortDesc::new("out", "Out", RGB)],
+        params: &[
+            ParamDesc::choice("by", "By", &["Luma", "Hue", "Sat", "Key"]),
+            ParamDesc::knob("low", "Low", 0.0, 1.0, 0.3).video_cv(),
+            ParamDesc::knob("high", "High", 0.0, 1.0, 1.0).video_cv(),
+            ParamDesc::knob("length", "Length", 4.0, 256.0, 96.0)
+                .exp()
+                .unit("px"),
+            ParamDesc::choice("dir", "Dir", &["Right", "Left", "Down", "Up"]),
+        ],
+        screen: false,
+        ring: None,
+        text: None,
+        kernel: Kernel::Staged {
+            source: include_str!("kernels/pixelsort.wgsl"),
+            stages: &[1, 1, 1],
+        },
+    },
+    behavior: None,
+    origin: Origin::BuiltIn,
+};
+
+static JPEG: ModuleType = ModuleType {
+    desc: ModuleDesc {
+        id: "dov.jpeg",
+        name: "JPEG",
+        category: Category::Glitch,
+        description: "JPEG compression, done for real on 8×8 blocks every field: turn Quality \
+                      down for blocking and ringing. Corrupt damages the file as it's read, as \
+                      a bad bit would: blocks smeared into stripes or knocked flat, and colors \
+                      and positions that slip and stay slipped for the rest of the row. Both \
+                      take video CV, so a key can crush one part of the picture. Rate is how \
+                      often the damage moves.",
+        inputs: &[PortDesc::new("sig", "In", RGB)],
+        outputs: &[PortDesc::new("out", "Out", RGB)],
+        params: &[
+            ParamDesc::knob("quality", "Quality", 1.0, 100.0, 20.0).video_cv(),
+            ParamDesc::knob("corrupt", "Corrupt", 0.0, 1.0, 0.0).video_cv(),
+            ParamDesc::knob("rate", "Rate", 0.5, 60.0, 4.0)
+                .exp()
+                .unit("Hz")
+                .control_cv(),
+        ],
+        screen: false,
+        ring: None,
+        text: None,
+        kernel: Kernel::Staged {
+            source: include_str!("kernels/jpeg.wgsl"),
+            stages: &[8, 1, 1, 1],
+        },
     },
     behavior: None,
     origin: Origin::BuiltIn,

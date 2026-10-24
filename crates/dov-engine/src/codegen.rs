@@ -5,10 +5,10 @@
 
 use bytemuck::{Pod, Zeroable};
 use dov_core::{Curve, Kernel, ModuleDesc, ParamKind, PortKind};
-use dov_format::glue::{EXTRA_SLOTS, MAX_INPUTS, MAX_OUTPUTS, PRELUDE, STD_LIB};
+use dov_format::glue::{EXTRA_SLOTS, MAX_INPUTS, MAX_OUTPUTS, MAX_STAGES, PRELUDE, Pass, STD_LIB};
 pub use dov_format::glue::{
-    INPUT_BINDING_BASE, MAX_PARAM_SLOTS, OUTPUT_BINDING_BASE, RING_BINDING, TEXT_BINDING,
-    TEXT_SAMPLER_BINDING,
+    INPUT_BINDING_BASE, MAX_PARAM_SLOTS, OUTPUT_BINDING_BASE, RING_BINDING, STAGE_BINDING_BASE,
+    STAGE_WRITE_BINDING, TEXT_BINDING, TEXT_SAMPLER_BINDING,
 };
 
 /// Mirrors `FieldInfo` in `dov_format::glue::PRELUDE`.
@@ -53,7 +53,7 @@ impl Default for ModuleUniformsGpu {
 pub fn interface(desc: &ModuleDesc) -> Result<dov_format::Interface, String> {
     use dov_format as f;
     let kernel = match desc.kernel {
-        Kernel::Pointwise(_) => f::KernelKind::Pointwise,
+        Kernel::Pointwise(_) | Kernel::Staged { .. } => f::KernelKind::Pointwise,
         Kernel::LineScan(_) => f::KernelKind::LineScan,
         other => return Err(format!("{}: {other:?} has no generated shader", desc.id)),
     };
@@ -124,20 +124,42 @@ pub fn interface(desc: &ModuleDesc) -> Result<dov_format::Interface, String> {
     })
 }
 
-/// Builds the shader for a pointwise or line-scan module.
-pub fn module_shader(desc: &ModuleDesc) -> Result<String, String> {
-    let body = match desc.kernel {
-        Kernel::Pointwise(src) | Kernel::LineScan(src) => src,
+/// Builds the shaders for a pointwise, line-scan or staged module: one per
+/// pass, the stages first.
+pub fn module_shaders(desc: &ModuleDesc) -> Result<Vec<String>, String> {
+    let (body, stages) = match desc.kernel {
+        Kernel::Pointwise(src) | Kernel::LineScan(src) => (src, &[][..]),
+        Kernel::Staged { source, stages } => (source, stages),
         other => return Err(format!("{}: {other:?} has no generated shader", desc.id)),
     };
     let iface = interface(desc)?;
     if iface.inputs_full().len() > MAX_INPUTS
         || iface.outputs.len() > MAX_OUTPUTS
         || iface.param_slots() > MAX_PARAM_SLOTS
+        || stages.len() > MAX_STAGES
     {
-        return Err(format!("{}: too many ports or params", desc.id));
+        return Err(format!("{}: too many ports, params or stages", desc.id));
     }
-    Ok(dov_format::glue::shader(&iface, body))
+    let mut shaders: Vec<String> = stages
+        .iter()
+        .enumerate()
+        .map(|(index, &block)| {
+            dov_format::glue::pass_shader(
+                &iface,
+                body,
+                Pass::Stage {
+                    index,
+                    block: block.max(1),
+                },
+            )
+        })
+        .collect();
+    shaders.push(dov_format::glue::pass_shader(
+        &iface,
+        body,
+        Pass::Process { stages: stages.len() },
+    ));
+    Ok(shaders)
 }
 
 /// Averages a video signal for cables into control inputs (see `Meter`).
@@ -197,8 +219,10 @@ mod tests {
     #[test]
     fn every_module_shader_validates() {
         for m in dov_modules::all() {
-            if let Kernel::Pointwise(_) | Kernel::LineScan(_) = m.desc.kernel {
-                validate(m.desc.id, &module_shader(&m.desc).unwrap());
+            if let Kernel::Pointwise(_) | Kernel::LineScan(_) | Kernel::Staged { .. } = m.desc.kernel {
+                for shader in module_shaders(&m.desc).unwrap() {
+                    validate(m.desc.id, &shader);
+                }
             }
         }
     }

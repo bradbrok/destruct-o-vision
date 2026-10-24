@@ -512,6 +512,56 @@ pub fn showcase() -> Rack {
 }
 
 /// An empty rack with just an Output module.
+/// Digital glitches on a spinning torus: datamoshed between keyframes on
+/// each bar, then pixel-sorted, JPEG-crushed and torn.
+pub fn glitch() -> Rack {
+    let mut rack = Rack::default();
+    let mut add = |kind: &str, row: i32| {
+        let ty = dov_modules::find(kind).unwrap_or_else(|| panic!("missing module {kind}"));
+        let col = rack.row_end(row);
+        rack.add_module(ty, row, col)
+    };
+    let torus = add("dov.object", 0);
+    let bar = add("dov.lfo", 0);
+    let mosh = add("dov.datamosh", 0);
+    let sort = add("dov.pixelsort", 1);
+    let jpeg = add("dov.jpeg", 1);
+    let slice = add("dov.slice", 1);
+    let output = add("dov.output", 1);
+
+    set(&rack, torus, "shape", 2.0);
+    set(&rack, torus, "mode", 1.0);
+    set(&rack, torus, "size", 1.3);
+    set(&rack, torus, "spin_x", 50.0);
+    set(&rack, torus, "spin_y", 80.0);
+    // A keyframe on the first beat of every bar; between them the torus
+    // drags its own old picture around.
+    set(&rack, bar, "mode", 1.0);
+    set(&rack, bar, "div", 2.0);
+    set_cv(&rack, mosh, "keyframe", 1.0);
+    set(&rack, mosh, "motion", 2.0);
+    set(&rack, mosh, "bleed", 0.0);
+    set(&rack, sort, "low", 0.35);
+    set(&rack, sort, "dir", 2.0);
+    set(&rack, jpeg, "quality", 25.0);
+    set(&rack, jpeg, "corrupt", 0.02);
+    set(&rack, slice, "amount", 0.08);
+    set(&rack, slice, "rate", 2.0);
+
+    for (from, out, to, inp) in [
+        (torus, "out", mosh, "sig"),
+        (bar, "trig", mosh, "keyframe_cv"),
+        (mosh, "out", sort, "sig"),
+        (sort, "out", jpeg, "sig"),
+        (jpeg, "out", slice, "sig"),
+        (slice, "out", output, "sig"),
+    ] {
+        rack.connect(addr(from, out), addr(to, inp), None);
+    }
+    rack.clear_history();
+    rack
+}
+
 pub fn empty() -> Rack {
     let mut rack = Rack::default();
     if let Some(ty) = dov_modules::find("dov.output") {

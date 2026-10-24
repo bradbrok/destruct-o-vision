@@ -18,7 +18,7 @@ use dov_modules::{
 
 use crate::codegen::{
     self, FieldInfoGpu, INPUT_BINDING_BASE, MAX_PARAM_SLOTS, ModuleUniformsGpu, OUTPUT_BINDING_BASE,
-    RING_BINDING, TEXT_BINDING, TEXT_SAMPLER_BINDING,
+    RING_BINDING, STAGE_BINDING_BASE, STAGE_WRITE_BINDING, TEXT_BINDING, TEXT_SAMPLER_BINDING,
 };
 use crate::gpu::{GpuQueue, SIGNAL_FORMAT};
 use crate::graph::{self, PatchSnapshot, Schedule, SnapshotModule, Source};
@@ -122,6 +122,33 @@ impl Ring {
             writes: 0,
         }
     }
+}
+
+/// What a staged kernel's stages store: full precision, so they can hold
+/// positions, counts and coefficients exactly.
+const STAGE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
+
+/// Room for one stage of a staged kernel: a value per sample, or per
+/// `block`×`block` block of samples.
+fn stage_texture(device: &wgpu::Device, raster: &RasterStd, block: u32) -> wgpu::TextureView {
+    let (width, height) = raster.active_size();
+    let block = block.max(1);
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("stage"),
+            size: wgpu::Extent3d {
+                width: width.div_ceil(block),
+                height: height.div_ceil(block),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: STAGE_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
+            view_formats: &[],
+        })
+        .create_view(&Default::default())
 }
 
 /// The CRT module's settings, for the engine's picture tube.
@@ -326,6 +353,11 @@ enum Slot {
     TvDecodedRead,
     Ring,
     TextSdf,
+    /// What stage `k` of a staged kernel stored this field.
+    Stage {
+        k: usize,
+        write: bool,
+    },
 }
 
 /// How many workgroups a pass needs.
@@ -340,6 +372,8 @@ enum Dispatch {
     Single,
     /// 16×16 tiles over (picture width × TV scan lines).
     Beams,
+    /// 16×16 tiles over the n×n blocks of one field's active picture.
+    Blocks(u32),
 }
 
 struct PassSpec {
@@ -374,6 +408,8 @@ struct Instance {
     picture: Option<PictureState>,
     tv: Option<TvState>,
     ring: Option<Ring>,
+    /// What each stage of a staged kernel stores for the passes after it.
+    stages: Vec<wgpu::TextureView>,
     /// Per output: its brightness meter, when a cable takes it into a control input.
     meters: Vec<Option<Meter>>,
     text: Option<TextState>,
@@ -402,6 +438,7 @@ impl Instance {
             picture: None,
             tv: None,
             ring: None,
+            stages: Vec::new(),
             meters: desc.outputs.iter().map(|_| None).collect(),
             text: None,
             control_out: vec![0.0; desc.outputs.len()],
@@ -419,7 +456,10 @@ impl Instance {
     /// Generated kernels apply CV per sample themselves; engine kernels get
     /// params with control-rate CV already folded in.
     fn folds_cv(&self) -> bool {
-        !matches!(self.ty.desc.kernel, Kernel::Pointwise(_) | Kernel::LineScan(_))
+        !matches!(
+            self.ty.desc.kernel,
+            Kernel::Pointwise(_) | Kernel::LineScan(_) | Kernel::Staged { .. }
+        )
     }
 }
 
@@ -567,6 +607,7 @@ impl Runtime {
             inst.store = None;
             inst.tv = None;
             inst.ring = None;
+            inst.stages.clear();
             inst.meters.iter_mut().for_each(|m| *m = None);
         }
         self.last_field = None;
@@ -657,6 +698,12 @@ impl Runtime {
                 }
                 Kernel::Composite(CompositeOp::Tv) if inst.tv.is_none() => {
                     inst.tv = Some(TvState::new(device, &raster));
+                }
+                Kernel::Staged { stages, .. } if inst.stages.is_empty() => {
+                    inst.stages = stages
+                        .iter()
+                        .map(|&n| stage_texture(device, &raster, n))
+                        .collect();
                 }
                 _ => {}
             }
@@ -809,6 +856,10 @@ impl Runtime {
                     Slot::TextSdf => wgpu::BindingResource::TextureView(
                         inst.text.as_ref().map_or(&self.no_text, |t| &t.view),
                     ),
+                    Slot::Stage { k, .. } => match inst.stages.get(k) {
+                        Some(view) => wgpu::BindingResource::TextureView(view),
+                        None => return Vec::new(),
+                    },
                 };
                 entries.push(wgpu::BindGroupEntry { binding, resource });
             }
@@ -916,7 +967,7 @@ impl Runtime {
             Kernel::Composite(_) => {
                 u.extra[4..8].copy_from_slice(&composite_timing(&self.raster, field));
             }
-            Kernel::Pointwise(_) | Kernel::LineScan(_) | Kernel::Control => {}
+            Kernel::Pointwise(_) | Kernel::LineScan(_) | Kernel::Staged { .. } | Kernel::Control => {}
         }
         u
     }
@@ -1256,6 +1307,10 @@ impl Runtime {
                     Dispatch::CompositeRows => (composite_rows.div_ceil(64), 1),
                     Dispatch::Single => (1, 1),
                     Dispatch::Beams => (info.width.div_ceil(16), TV_MAX_BEAMS.div_ceil(16)),
+                    Dispatch::Blocks(n) => (
+                        info.width.div_ceil(n).div_ceil(16),
+                        info.lines.div_ceil(n).div_ceil(16),
+                    ),
                 };
                 cpass.dispatch_workgroups(x, y, 1);
             }
@@ -1500,27 +1555,51 @@ fn pass_specs(ty: &ModuleType) -> Result<Vec<PassSpec>, String> {
         }
     };
     Ok(match desc.kernel {
-        Kernel::Pointwise(_) | Kernel::LineScan(_) => {
-            let mut slots = vec![(0, Uniforms)];
-            slots.extend((0..desc.input_count()).map(|j| (INPUT_BINDING_BASE + j as u32, Input(j))));
-            outputs(&mut slots);
-            if desc.ring.is_some() {
-                slots.push((RING_BINDING, Ring));
-            }
-            if desc.text.is_some() {
-                slots.push((TEXT_BINDING, TextSdf));
-                slots.push((TEXT_SAMPLER_BINDING, LinearSampler));
-            }
-            vec![PassSpec {
-                label: desc.id,
-                source: codegen::module_shader(desc)?,
-                slots,
-                dispatch: if matches!(desc.kernel, Kernel::LineScan(_)) {
-                    Dispatch::Lines
-                } else {
-                    Dispatch::Pixels
-                },
-            }]
+        Kernel::Pointwise(_) | Kernel::LineScan(_) | Kernel::Staged { .. } => {
+            let blocks = match desc.kernel {
+                Kernel::Staged { stages, .. } => stages,
+                _ => &[],
+            };
+            let shaders = codegen::module_shaders(desc)?;
+            let last = shaders.len() - 1;
+            shaders
+                .into_iter()
+                .enumerate()
+                .map(|(pass, source)| {
+                    let mut slots = vec![(0, Uniforms)];
+                    slots.extend((0..desc.input_count()).map(|j| (INPUT_BINDING_BASE + j as u32, Input(j))));
+                    if desc.ring.is_some() {
+                        slots.push((RING_BINDING, Ring));
+                    }
+                    if desc.text.is_some() {
+                        slots.push((TEXT_BINDING, TextSdf));
+                        slots.push((TEXT_SAMPLER_BINDING, LinearSampler));
+                    }
+                    slots.extend(
+                        (0..pass).map(|k| (STAGE_BINDING_BASE + k as u32, Stage { k, write: false })),
+                    );
+                    let dispatch = if pass < last {
+                        slots.push((STAGE_WRITE_BINDING, Stage { k: pass, write: true }));
+                        match blocks[pass] {
+                            0 | 1 => Dispatch::Pixels,
+                            n => Dispatch::Blocks(n),
+                        }
+                    } else {
+                        outputs(&mut slots);
+                        if matches!(desc.kernel, Kernel::LineScan(_)) {
+                            Dispatch::Lines
+                        } else {
+                            Dispatch::Pixels
+                        }
+                    };
+                    PassSpec {
+                        label: desc.id,
+                        source,
+                        slots,
+                        dispatch,
+                    }
+                })
+                .collect()
         }
         Kernel::Feedback => {
             // The store stands in for In (input 0); the CV inputs follow it.
@@ -1668,6 +1747,8 @@ fn layout_entry(binding: u32, slot: Slot, ty: &ModuleType) -> wgpu::BindGroupLay
         Slot::TvSync { write } | Slot::TvBeams { write } => storage_buffer(!write),
         Slot::TvScan => storage_buffer(false),
         Slot::TvDecodedWrite => storage_texture(SIGNAL_FORMAT),
+        Slot::Stage { write: false, .. } => texture(false),
+        Slot::Stage { write: true, .. } => storage_texture(STAGE_FORMAT),
         Slot::Ring => wgpu::BindingType::Texture {
             sample_type: wgpu::TextureSampleType::Float { filterable: false },
             view_dimension: wgpu::TextureViewDimension::D2Array,
@@ -1772,6 +1853,287 @@ mod tests {
         let hd = composite_timing(&RasterStd::HD1080P60, 0);
         assert_eq!((hd[3][2], hd[3][3]), (0.0, 1125.0));
         assert_eq!(hd[1][1], 0.0, "no subcarrier in HD");
+    }
+
+    fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
+        pollster::block_on(adapter.request_device(&Default::default())).ok()
+    }
+
+    fn wait(device: &wgpu::Device) {
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .unwrap();
+    }
+
+    /// A module of type `kind`, with the params in `set` changed.
+    fn module(id: u64, kind: &str, set: &[(&str, f32)]) -> SnapshotModule {
+        let ty = dov_modules::find(kind).unwrap();
+        let params = ParamBank::new(&ty.desc.default_slots());
+        for &(param, v) in set {
+            params.set(ty.desc.param_index(param).unwrap(), v);
+        }
+        SnapshotModule {
+            id: ModuleId(id),
+            ty,
+            params: Arc::new(params),
+        }
+    }
+
+    /// `from`'s first output into `to`'s `input`.
+    fn cable(from: &SnapshotModule, to: &SnapshotModule, input: &str) -> graph::SnapshotCable {
+        graph::SnapshotCable {
+            from: from.id,
+            output: 0,
+            to: to.id,
+            input: to.ty.desc.input_index(input).unwrap(),
+        }
+    }
+
+    /// Runs `snap` for fields `fields` at `raster`.
+    fn run(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        raster: RasterStd,
+        snap: &PatchSnapshot,
+        fields: std::ops::Range<u64>,
+    ) -> Runtime {
+        let mut runtime = Runtime::new(device, raster);
+        runtime.set_patch(device, snap);
+        for field in fields {
+            let mut encoder = device.create_command_encoder(&Default::default());
+            runtime.run_field(
+                device,
+                queue,
+                &mut encoder,
+                field,
+                true,
+                Beat {
+                    beats: 0.0,
+                    bpm: 120.0,
+                },
+            );
+            queue.submit([encoder.finish()]);
+            runtime.after_submit();
+            wait(device);
+        }
+        runtime
+    }
+
+    /// Rows of R'G'B' samples.
+    type Picture = Vec<Vec<[f32; 3]>>;
+
+    /// A module type, the input noise goes into, and params to change.
+    type UnderTest<'a> = (&'a str, &'a str, &'a [(&'a str, f32)]);
+
+    /// The first output of module `id`.
+    fn picture(device: &wgpu::Device, queue: &wgpu::Queue, runtime: &Runtime, id: u64) -> Picture {
+        let inst = runtime.instances.iter().find(|i| i.id == ModuleId(id)).unwrap();
+        let texture = &inst.outputs[0].as_ref().unwrap().texture;
+        let size = texture.size();
+        let bytes_per_row = (size.width * 8).next_multiple_of(256);
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: u64::from(bytes_per_row * size.height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: None,
+                },
+            },
+            size,
+        );
+        queue.submit([encoder.finish()]);
+        readback.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        wait(device);
+        let bytes = readback.slice(..).get_mapped_range().unwrap();
+        let half = |at: usize| half::f16::from_le_bytes([bytes[at], bytes[at + 1]]).to_f32();
+        (0..size.height as usize)
+            .map(|y| {
+                (0..size.width as usize)
+                    .map(|x| {
+                        let at = y * bytes_per_row as usize + x * 8;
+                        [half(at), half(at + 2), half(at + 4)]
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Noise through a module of type `kind` (into its `input`), then the
+    /// noise and the module's output, after a field of each parity.
+    fn through(kind: &str, input: &str, set: &[(&str, f32)], raster: RasterStd) -> Option<[Picture; 2]> {
+        let (device, queue) = gpu()?;
+        let noise = module(1, "dov.noise", &[]);
+        let m = module(2, kind, set);
+        let output = module(3, "dov.output", &[]);
+        let snap = PatchSnapshot {
+            cables: vec![cable(&noise, &m, input), cable(&m, &output, "sig")],
+            modules: vec![noise, m, output],
+        };
+        let runtime = run(&device, &queue, raster, &snap, 0..2);
+        Some([
+            picture(&device, &queue, &runtime, 1),
+            picture(&device, &queue, &runtime, 2),
+        ])
+    }
+
+    #[test]
+    fn pixel_sort_sorts_runs_exactly() {
+        for (dir, length) in [(0.0, 64.0), (1.0, 24.0), (2.0, 40.0)] {
+            let set = [("low", 0.0), ("high", 1.0), ("length", length), ("dir", dir)];
+            let Some([noise, sorted]) = through("dov.pixelsort", "sig", &set, RasterStd::NTSC) else {
+                return;
+            };
+            // Lines across for Right and Left; columns of each field for Down.
+            let lines: Vec<(Vec<f32>, Vec<f32>)> = if dir < 2.0 {
+                noise
+                    .iter()
+                    .zip(&sorted)
+                    .map(|(a, b)| (a.iter().map(|c| c[1]).collect(), b.iter().map(|c| c[1]).collect()))
+                    .collect()
+            } else {
+                let (noise, sorted) = (&noise, &sorted);
+                (0..noise[0].len())
+                    .flat_map(|x| {
+                        (0..2).map(move |parity| {
+                            let column =
+                                |p: &Picture| p.iter().skip(parity).step_by(2).map(|row| row[x][1]).collect();
+                            (column(noise), column(sorted))
+                        })
+                    })
+                    .collect()
+            };
+            for (n, (before, after)) in lines.iter().enumerate() {
+                // The same values, rearranged...
+                let mut a = before.clone();
+                let mut b = after.clone();
+                a.sort_by(f32::total_cmp);
+                b.sort_by(f32::total_cmp);
+                assert_eq!(a, b, "dir {dir}, line {n}: not a rearrangement");
+                // ...into runs no shorter than Length, apart from the ends.
+                let falls = after
+                    .windows(2)
+                    .filter(|w| if dir == 1.0 { w[1] > w[0] } else { w[1] < w[0] })
+                    .count();
+                let most = before.len().div_ceil(length as usize) + 1;
+                assert!(
+                    falls <= most,
+                    "dir {dir}, line {n}: {falls} breaks, at most {most}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn jpeg_at_full_quality_keeps_the_picture() {
+        let Some([noise, out]) = through("dov.jpeg", "sig", &[("quality", 100.0)], RasterStd::NTSC) else {
+            return;
+        };
+        let errors: Vec<f32> = noise
+            .iter()
+            .flatten()
+            .zip(out.iter().flatten())
+            .flat_map(|(a, b)| (0..3).map(move |c| (a[c] - b[c]).abs() * 255.0))
+            .collect();
+        let mean = errors.iter().sum::<f32>() / errors.len() as f32;
+        let worst = errors.iter().copied().fold(0.0, f32::max);
+        assert!(mean < 0.5 && worst < 3.0, "mean {mean}, worst {worst} levels");
+    }
+
+    #[test]
+    fn modules_at_rest_pass_the_picture() {
+        for (kind, input, set) in [
+            ("dov.transform", "sig", &[][..]),
+            ("dov.datamosh", "sig", &[("keyframe", 1.0)][..]),
+            ("dov.slice", "sig", &[("amount", 0.0)][..]),
+        ] {
+            let Some([noise, out]) = through(kind, input, set, RasterStd::NTSC) else {
+                return;
+            };
+            let worst = noise
+                .iter()
+                .flatten()
+                .zip(out.iter().flatten())
+                .map(|(a, b)| (0..3).map(|c| (a[c] - b[c]).abs()).fold(0.0, f32::max))
+                .fold(0.0, f32::max);
+            assert!(noise == out, "{kind} changed the picture, by up to {worst}");
+        }
+    }
+
+    #[test]
+    fn bits_xor_of_a_picture_with_itself_is_black() {
+        let Some((device, queue)) = gpu() else {
+            return;
+        };
+        let noise = module(1, "dov.noise", &[]);
+        let bits = module(2, "dov.bits", &[]);
+        let snap = PatchSnapshot {
+            cables: vec![cable(&noise, &bits, "a"), cable(&noise, &bits, "b")],
+            modules: vec![noise, bits],
+        };
+        let runtime = run(&device, &queue, RasterStd::NTSC, &snap, 0..2);
+        let out = picture(&device, &queue, &runtime, 2);
+        assert!(out.iter().flatten().all(|c| *c == [0.0; 3]));
+    }
+
+    /// GPU time a module adds to a 1080p field of noise, beyond the noise
+    /// itself: `cargo test -p dov-engine --release module_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn module_cost() {
+        let Some((device, queue)) = gpu() else {
+            return;
+        };
+        let raster = RasterStd::HD1080P60;
+        // Milliseconds a field: noise into `under_test`, if any, into the output.
+        let time = |under_test: Option<UnderTest>| {
+            let noise = module(1, "dov.noise", &[]);
+            let output = module(3, "dov.output", &[]);
+            let mut snap = PatchSnapshot {
+                modules: vec![noise.clone(), output.clone()],
+                cables: vec![cable(&noise, &output, "sig")],
+            };
+            if let Some((kind, input, set)) = under_test {
+                let m = module(2, kind, set);
+                snap.cables = vec![cable(&noise, &m, input), cable(&m, &output, "sig")];
+                snap.modules.push(m);
+            }
+            run(&device, &queue, raster, &snap, 0..10);
+            let start = std::time::Instant::now();
+            run(&device, &queue, raster, &snap, 10..130);
+            start.elapsed().as_secs_f64() * 1000.0 / 120.0
+        };
+        let base = time(None);
+        println!("noise into the output: {base:.2} ms a field at 1080p");
+        for (kind, input, set) in [
+            ("dov.transform", "sig", &[][..]),
+            ("dov.warp", "sig", &[][..]),
+            ("dov.polar", "sig", &[][..]),
+            ("dov.kaleido", "sig", &[][..]),
+            ("dov.bits", "a", &[][..]),
+            ("dov.slice", "sig", &[("amount", 1.0)][..]),
+            ("dov.jpeg", "sig", &[][..]),
+            ("dov.jpeg", "sig", &[("corrupt", 1.0)][..]),
+            ("dov.pixelsort", "sig", &[("low", 0.0)][..]),
+            ("dov.pixelsort", "sig", &[("low", 0.0), ("length", 256.0)][..]),
+            ("dov.datamosh", "sig", &[][..]),
+            ("dov.datamosh", "sig", &[("block", 2.0)][..]),
+        ] {
+            println!("{kind} {set:?}: +{:.2} ms", time(Some((kind, input, set))) - base);
+        }
     }
 
     #[test]

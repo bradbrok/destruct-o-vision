@@ -11,10 +11,10 @@ and click "Open Anyway". On macOS 15 and later, right-click > Open no longer
 gets around this.
 
 GETTING STARTED
-File > Demo patch, Analog demo, Delay & key demo, 3D & text demo and Audio
-demo are good starting points. Right-click empty rack space to add modules,
-and drag from jack to jack to patch. Your patches, snapshots and modules live
-in Documents/Destruct-O-Vision.
+The demos on the File menu (Showcase, Feedback, Analog, Delay & key, 3D &
+text, Glitch, Camera and Audio) are good starting points. Right-click empty
+rack space to add modules, and drag from jack to jack to patch. Your patches,
+snapshots and modules live in Documents/Destruct-O-Vision.
 
 SOUND AND MIDI
 Audio In asks for microphone access the first time; click its top row to
