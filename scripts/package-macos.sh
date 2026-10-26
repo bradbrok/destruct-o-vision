@@ -55,11 +55,23 @@ notarize() {
     xcrun stapler staple "$2"
 }
 
+# The app's version, which dov-app takes from the workspace. Read from the
+# source, never from a prebuilt app, whose contents are only as trusted as
+# the build that made them; and checked, as it goes into sed and paths.
+VERSION=$(awk '/^\[/ { in_package = ($0 == "[workspace.package]") }
+    in_package && /^version *=/ { gsub(/^version *= *"|".*$/, ""); print; exit }' Cargo.toml)
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+    echo "unexpected version: $VERSION" >&2
+    exit 1
+fi
+
 if [[ "${DOV_PREBUILT:-0}" == 1 ]]; then
-    VERSION=$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")
+    built_version=$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")
+    if [[ "$built_version" != "$VERSION" ]]; then
+        echo "$app is version $built_version, not $VERSION" >&2
+        exit 1
+    fi
 else
-    VERSION=$(cargo metadata --no-deps --format-version 1 |
-        python3 -I -c 'import json, sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "dov-app"))')
     if [[ "${UNIVERSAL:-0}" == 1 ]]; then
         targets=(aarch64-apple-darwin x86_64-apple-darwin)
         binaries=()
