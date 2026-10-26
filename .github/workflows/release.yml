@@ -7,20 +7,86 @@ on:
 permissions: {}
 
 jobs:
-  macos:
+  # Builds the app with no secrets and a read-only token: build scripts and
+  # macros from dependencies run here, never where the signing keys are.
+  build:
     runs-on: macos-15
-    # Only this job can write, to create the release. It runs no third-party
-    # actions (no build cache): releases are rare, and a cache action would
-    # run with this token.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: UNIVERSAL=1 scripts/package-macos.sh
+      # A tarball keeps the app's permissions, which artifacts drop.
+      - run: tar -czf app.tar.gz -C dist Destruct-O-Vision.app
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: app
+          path: app.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  # Signs, notarizes and drafts the release, building nothing. The signing
+  # secrets are in the release environment, which only v* tags can use.
+  release:
+    needs: build
+    runs-on: macos-15
+    environment: release
+    # Only this job can write, to create the release. It runs no actions but
+    # GitHub's own, pinned, and no build cache: releases are rare, and a cache
+    # action would run with this token.
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Ad-hoc signed until a Developer ID certificate is set up; see
-      # scripts/package-macos.sh for the variables that sign and notarize.
-      - run: UNIVERSAL=1 scripts/package-macos.sh
-      - run: gh release create "$GITHUB_REF_NAME" --draft --generate-notes dist/*.dmg
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: app
+      - run: mkdir -p dist && tar -xzf app.tar.gz -C dist && rm app.tar.gz
+      # Puts the Developer ID certificate in a keychain of its own, and the
+      # notary key in a file, for scripts/package-macos.sh. Without the
+      # secrets the app is ad-hoc signed, as on a fork.
+      - name: Set up signing
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          if [[ -z "$MACOS_CERT_P12" ]]; then
+            echo "::warning::No signing secrets: the app will be ad-hoc signed and not notarized."
+            exit 0
+          fi
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password=$(openssl rand -base64 24)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          base64 --decode <<<"$MACOS_CERT_P12" >"$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MACOS_CERT_PASSWORD" -f pkcs12 -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          sign_id=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)
+          [[ -n "$sign_id" ]] || { echo "no Developer ID Application identity in MACOS_CERT_P12" >&2; exit 1; }
+          base64 --decode <<<"$NOTARY_KEY_P8" >"$RUNNER_TEMP/notary.p8"
+          {
+            echo "DOV_SIGN_ID=$sign_id"
+            echo "DOV_NOTARY_KEY=$RUNNER_TEMP/notary.p8"
+            echo "DOV_NOTARY_KEY_ID=$NOTARY_KEY_ID"
+            echo "DOV_NOTARY_ISSUER=$NOTARY_ISSUER_ID"
+          } >>"$GITHUB_ENV"
+      - run: DOV_PREBUILT=1 scripts/package-macos.sh
+      # A draft, to be given its notes and published by hand.
+      - run: gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "Destruct-O-Vision ${GITHUB_REF_NAME#v}" dist/*.dmg
         env:
           GH_TOKEN: ${{ github.token }}
+      - name: Remove signing
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/notary.p8"

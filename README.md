@@ -83,8 +83,6 @@ Patches are saved to `patches/*.dov` in the folder you started the app from. The
 
 Get the Mac app from [Releases](https://github.com/bradbrok/destruct-o-vision/releases). It's one app for both Apple silicon and Intel, on macOS 11 or later. Open the DMG and drag Destruct-O-Vision into Applications.
 
-Builds aren't signed by Apple yet, so macOS blocks the app the first time. Open it once, then go to System Settings > Privacy & Security and click **Open Anyway**.
-
 Linux and Windows builds haven't been tried yet. You can [build from source](#build-and-run).
 
 ## Writing modules

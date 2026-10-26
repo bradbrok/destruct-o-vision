@@ -4,12 +4,6 @@ A modular video synthesizer that emulates analog video.
 INSTALL
 Drag Destruct-O-Vision into Applications.
 
-FIRST LAUNCH
-This build isn't signed by Apple yet, so macOS blocks it the first time.
-Open it once, then go to System Settings > Privacy & Security, scroll down,
-and click "Open Anyway". On macOS 15 and later, right-click > Open no longer
-gets around this.
-
 GETTING STARTED
 The demos on the File menu (Showcase, Feedback, Analog, Delay & key, 3D &
 text, Glitch, Camera and Audio) are good starting points. Right-click empty
