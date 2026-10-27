@@ -52,6 +52,14 @@ notarize() {
         echo "notarizing $1: $status" >&2
         exit 1
     fi
+    # Stapling fetches the ticket from Apple, which now and then drops the
+    # connection (error 68); try again a few times before giving up.
+    local try
+    for try in 1 2 3 4; do
+        xcrun stapler staple "$2" && return
+        echo "stapling $2 failed (try $try); retrying" >&2
+        sleep $((try * 15))
+    done
     xcrun stapler staple "$2"
 }
 
