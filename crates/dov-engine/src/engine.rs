@@ -724,10 +724,16 @@ impl Engine {
     }
 
     /// Height of snapshots and movies: 1080 lines, or the raster's own if
-    /// taller (vertical video, 4K), unless `DOV_CAPTURE_HEIGHT` says.
+    /// taller (vertical video, 4K), unless `DOV_CAPTURE_HEIGHT` says. Less
+    /// if that would make either side bigger than a texture can be, as a
+    /// very wide raster would.
     fn capture_height(&self) -> u32 {
-        self.capture_height
-            .unwrap_or_else(|| CAPTURE_HEIGHT.max(self.raster.active_size().1))
+        let height = self
+            .capture_height
+            .unwrap_or_else(|| CAPTURE_HEIGHT.max(self.raster.active_size().1));
+        let limit = self.device.limits().max_texture_dimension_2d;
+        let widest = (limit as f32 / self.raster.display_aspect).floor() as u32;
+        height.min(limit).min(widest).max(2)
     }
 
     /// Renders what the output window shows, at `capture_height`, for a
