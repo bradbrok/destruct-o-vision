@@ -34,6 +34,13 @@ Output > Record movie (Cmd+R) records the output window, as it shows, to a
 movie in Documents/Destruct-O-Vision/captures while you play. Cmd+R again
 stops it. H.264 makes a small MP4; ProRes keeps every scan line for editing.
 
+PICTURE SIZE
+The Raster menu sets the picture's size: NTSC or PAL, or sizes for screens,
+horizontal, vertical (1080x1920 for Reels, TikTok and Shorts), square and
+4:5, at the frame rate you pick, or any size you type. Movies and snapshots
+come out at that size. Color through the Encoder, VCR and TV needs NTSC or
+PAL.
+
 PICTURE TUBE
 Output shows the picture clean. Put a CRT in its place to see it on a picture
 tube: scan lines, phosphor mask, glow and curved glass. With Scan on Beam, a

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use dov_core::{ModuleId, RasterStd};
 use dov_engine::{EngineStats, IntervalSummary, TempoSync};
+use egui::containers::menu;
 use egui::load::SizedTexture;
 use egui::{Color32, Key, KeyboardShortcut, Modifiers, Stroke, Ui};
 
@@ -98,7 +99,46 @@ pub struct AppUi {
     pub tempo_edit: Option<f64>,
     /// Recent taps of Tap, for tap tempo.
     pub taps: Vec<std::time::Instant>,
+    /// Frame rate for the Raster menu's sizes, picked while on NTSC or PAL.
+    pub raster_rate: Option<f64>,
+    /// Width and height being typed in the Raster menu, while it's open.
+    pub custom_size: Option<[u32; 2]>,
 }
+
+/// A width and height, and what they're for.
+type RasterSize = (u32, u32, &'static str);
+
+/// Sizes in the Raster menu, by shape.
+const RASTER_SIZES: [(&str, &[RasterSize]); 3] = [
+    (
+        "Horizontal",
+        &[
+            (1280, 720, "HD 720p"),
+            (1920, 1080, "Full HD 1080p"),
+            (2560, 1440, "QHD 1440p"),
+            (3840, 2160, "4K UHD"),
+        ],
+    ),
+    (
+        "Vertical",
+        &[
+            (720, 1280, "HD"),
+            (1080, 1920, "Full HD: Reels, TikTok, Shorts"),
+            (1440, 2560, "QHD"),
+            (2160, 3840, "4K UHD"),
+        ],
+    ),
+    (
+        "Square and portrait",
+        &[
+            (1080, 1080, "Square posts, 1:1"),
+            (1080, 1350, "Portrait posts, 4:5"),
+        ],
+    ),
+];
+
+/// Frame rates for the Raster menu's sizes.
+const RASTER_RATES: [f64; 5] = [24.0, 25.0, 30.0, 50.0, 60.0];
 
 /// Taps further apart than this start a new tempo.
 const TAP_GAP: std::time::Duration = std::time::Duration::from_secs(2);
@@ -305,14 +345,14 @@ impl AppUi {
                     }
                 }
             });
-            ui.menu_button("Raster", |ui| {
-                for std in RasterStd::ALL {
-                    if ui.selectable_label(f.stats.raster == std, std.name).clicked() {
-                        actions.push(UiAction::SetRaster(std));
-                        ui.close();
-                    }
-                }
-            });
+            // Clicks inside stay in, for the custom size; picking a raster
+            // closes it.
+            let (_, open) = menu::MenuButton::new("Raster")
+                .config(menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside))
+                .ui(ui, |ui| self.raster_menu(ui, f, actions));
+            if open.is_none() {
+                self.custom_size = None;
+            }
             ui.menu_button("Output", |ui| {
                 if ui
                     .add_enabled(!f.output_shown, egui::Button::new("Show output window"))
@@ -467,18 +507,91 @@ impl AppUi {
         }
     }
 
+    /// The Raster menu: the broadcast standards, sizes for the screens video
+    /// is made for at a frame rate, and any size typed in.
+    fn raster_menu(&mut self, ui: &mut Ui, f: &FrameData, actions: &mut Vec<UiAction>) {
+        let current = f.stats.raster;
+        let (width, height) = current.active_size();
+        // The sizes share a frame rate; NTSC and PAL have their own.
+        let rate = if current.interlaced {
+            self.raster_rate.unwrap_or(60.0)
+        } else {
+            current.nominal_rate()
+        };
+        let heading = |ui: &mut Ui, text: &str| ui.label(egui::RichText::new(text).small().weak());
+        let mut pick = |ui: &mut Ui, std: RasterStd, label: String| {
+            if ui.selectable_label(current == std, label).clicked() {
+                actions.push(UiAction::SetRaster(std));
+                ui.close();
+            }
+        };
+        heading(ui, "Broadcast");
+        for std in [RasterStd::NTSC, RasterStd::PAL] {
+            pick(ui, std, std.name());
+        }
+        for (shape, sizes) in RASTER_SIZES {
+            ui.separator();
+            heading(ui, shape);
+            for &(w, h, what) in sizes {
+                pick(ui, RasterStd::progressive(w, h, rate), format!("{w}×{h}  {what}"));
+            }
+        }
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("Frame rate");
+            for r in RASTER_RATES {
+                if ui.selectable_label(rate == r, format!("{r}")).clicked() {
+                    self.raster_rate = Some(r);
+                    if !current.interlaced {
+                        actions.push(UiAction::SetRaster(RasterStd::progressive(width, height, r)));
+                    }
+                }
+            }
+        });
+        ui.separator();
+        heading(ui, "Custom size");
+        let [mut w, mut h] = self.custom_size.unwrap_or([width, height]);
+        ui.horizontal(|ui| {
+            let sides = RasterStd::MIN_SIDE..=RasterStd::MAX_SIDE;
+            ui.add(egui::DragValue::new(&mut w).range(sides.clone()).speed(2.0));
+            ui.label("×");
+            ui.add(egui::DragValue::new(&mut h).range(sides).speed(2.0));
+            if ui
+                .button("Swap")
+                .on_hover_text("Swap width and height, to turn horizontal into vertical")
+                .clicked()
+            {
+                std::mem::swap(&mut w, &mut h);
+            }
+            // Even sides, for movies.
+            let std = RasterStd::progressive(w.next_multiple_of(2), h.next_multiple_of(2), rate);
+            if ui.add_enabled(std != current, egui::Button::new("Use")).clicked() {
+                actions.push(UiAction::SetRaster(std));
+                ui.close();
+            }
+        });
+        self.custom_size = Some([w, h]);
+    }
+
     fn monitor_panel(&mut self, ui: &mut Ui, f: &FrameData) {
         let width = ui.available_width();
-        let aspect = f.probe.aspect;
+        // At most as tall as wide, so vertical video doesn't run long.
+        let size = rack_view::fit(f.probe.aspect, egui::vec2(width, width));
         ui.strong("Output");
-        let size = egui::vec2(width, width / aspect);
-        ui.add(egui::Image::from_texture(SizedTexture::new(f.output_preview, size)).fit_to_exact_size(size));
+        ui.vertical_centered(|ui| {
+            ui.add(
+                egui::Image::from_texture(SizedTexture::new(f.output_preview, size)).fit_to_exact_size(size),
+            );
+        });
         ui.add_space(6.0);
         ui.strong("Probe");
         if f.probing {
-            ui.add(
-                egui::Image::from_texture(SizedTexture::new(f.probe.texture, size)).fit_to_exact_size(size),
-            );
+            ui.vertical_centered(|ui| {
+                ui.add(
+                    egui::Image::from_texture(SizedTexture::new(f.probe.texture, size))
+                        .fit_to_exact_size(size),
+                );
+            });
         } else {
             ui.small("Hover a jack to see its signal here.");
         }
@@ -498,7 +611,7 @@ impl AppUi {
                 let s = &f.stats;
                 ui.label(format!(
                     "{} · f_H {:.4} kHz · f_V {:.4} Hz",
-                    s.raster.name,
+                    s.raster.name(),
                     s.raster.line_rate_hz() / 1000.0,
                     s.raster.field_rate_hz()
                 ));

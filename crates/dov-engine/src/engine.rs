@@ -21,8 +21,9 @@ const STATS_WINDOW: usize = 240;
 const DEFAULT_DISPLAY_HZ: f64 = 60.0;
 /// The tempo until a patch sets one.
 const DEFAULT_BPM: f64 = 120.0;
-/// Height of display captures and recordings, unless `DOV_CAPTURE_HEIGHT`
-/// says otherwise (to see a CRT's mask as a big display shows it).
+/// Least height of display captures and recordings: taller rasters are
+/// captured at their own height. `DOV_CAPTURE_HEIGHT` sets it instead (to see
+/// a CRT's mask as a big display shows it).
 const CAPTURE_HEIGHT: u32 = 1080;
 
 /// Maps wall-clock time onto field indices of the current raster standard.
@@ -176,7 +177,8 @@ pub(crate) struct Engine {
     field_intervals: IntervalTracker,
     present_intervals: IntervalTracker,
     debug_tv: bool,
-    capture_height: u32,
+    /// `DOV_CAPTURE_HEIGHT`, if set.
+    capture_height: Option<u32>,
 }
 
 impl Engine {
@@ -244,15 +246,14 @@ impl Engine {
             capture_height: std::env::var("DOV_CAPTURE_HEIGHT")
                 .ok()
                 .and_then(|h| h.parse().ok())
-                .filter(|&h| (120..=8192).contains(&h))
-                .unwrap_or(CAPTURE_HEIGHT),
+                .filter(|&h| (120..=8192).contains(&h)),
         };
         (engine, previews)
     }
 
     pub(crate) fn run(mut self) {
         raise_thread_priority();
-        log::info!("engine running: {}", self.raster.name);
+        log::info!("engine running: {}", self.raster.name());
         while self.handle_commands() {
             if self.recording.is_some() {
                 self.record_field();
@@ -498,7 +499,7 @@ impl Engine {
         };
         // The UI may have gone away during shutdown; nothing to do then.
         let _ = self.events.send(EngineEvent::Previews(previews));
-        log::info!("raster: {}", std.name);
+        log::info!("raster: {}", std.name());
     }
 
     fn acquire_output(&mut self) -> Option<wgpu::SurfaceTexture> {
@@ -639,12 +640,13 @@ impl Engine {
         let done = move |written| {
             let _ = events.send(EngineEvent::MovieSaved(written));
         };
+        let height = self.capture_height();
         match Recorder::start(
             &self.device,
             &mut self.blitter,
             &self.runtime,
             self.raster,
-            self.capture_height,
+            height,
             path,
             codec,
             done,
@@ -721,15 +723,22 @@ impl Engine {
         );
     }
 
-    /// Renders what the output window shows, at 1080 lines, for a capture.
-    /// Recording `Some(field)`, a CRT moves on a field at a time.
+    /// Height of snapshots and movies: 1080 lines, or the raster's own if
+    /// taller (vertical video, 4K), unless `DOV_CAPTURE_HEIGHT` says.
+    fn capture_height(&self) -> u32 {
+        self.capture_height
+            .unwrap_or_else(|| CAPTURE_HEIGHT.max(self.raster.active_size().1))
+    }
+
+    /// Renders what the output window shows, at `capture_height`, for a
+    /// capture. Recording `Some(field)`, a CRT moves on a field at a time.
     fn encode_display_capture(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         path: PathBuf,
         recording: Option<u64>,
     ) -> Capture {
-        let height = self.capture_height;
+        let height = self.capture_height();
         let width = (height as f32 * self.raster.display_aspect).round() as u32;
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("display capture"),

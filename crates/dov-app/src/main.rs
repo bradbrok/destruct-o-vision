@@ -46,7 +46,8 @@ usage: destructovision [options]
                          time | lab | glitch | camera | audio | empty,
                          or tv[:stage,...], e.g. tv:vcr,cable (Encoder -> stages -> TV)
   --set TYPE:PARAM=VAL   set a param on every module of a type, e.g. dov.vcr:tracking=0.5
-  --raster NAME          ntsc | pal | 720p | 1080p (default ntsc)
+  --raster NAME          ntsc | pal | 720p | 1080p (default ntsc), or a size and frame rate,
+                         e.g. 1080x1920p30 for vertical video (the rate defaults to 60)
   --sync NAME            where the tempo comes from: internal (default) | link | midi
   --ui-load MS           simulated UI work per frame, for pacing tests
   --snapshot-after SECS  save the output and the UI to captures/ after SECS
@@ -104,7 +105,11 @@ impl Options {
                         "pal" => RasterStd::PAL,
                         "720p" => RasterStd::HD720P60,
                         "1080p" => RasterStd::HD1080P60,
-                        other => return Err(format!("unknown raster '{other}'")),
+                        other => RasterStd::parse(other).ok_or(format!(
+                            "unknown raster '{other}' (sizes go from {} to {} a side)",
+                            RasterStd::MIN_SIDE,
+                            RasterStd::MAX_SIDE
+                        ))?,
                     })
                 }
                 "--sync" => {
@@ -493,10 +498,7 @@ impl AppState {
                 }
                 rack.path = Some(path.to_path_buf());
                 self.rack = rack;
-                if let Some(std) = patch
-                    .raster
-                    .and_then(|n| RasterStd::ALL.into_iter().find(|s| s.name == n))
-                {
+                if let Some(std) = patch.raster.as_deref().and_then(RasterStd::parse) {
                     self.engine.send(Command::SetRaster(std));
                 }
                 self.ui.rack_view.fit();
@@ -508,7 +510,7 @@ impl AppState {
 
     fn save(&mut self, path: PathBuf) {
         let mut patch = self.rack.to_patch();
-        patch.raster = Some(self.engine.stats().raster.name.to_string());
+        patch.raster = Some(self.engine.stats().raster.name());
         let written = patch.to_ron().map_err(|e| e.to_string()).and_then(|text| {
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -597,7 +599,7 @@ impl AppState {
              field {:.2}±{:.2} ms | present {:.2}±{:.2} ms [{:.2}–{:.2}] | acquire wait {:.2}±{:.2} ms, \
              {} occluded | ui frame {:.2} ms [{:.2}–{:.2}] | ui load {} ms | tempo {:.2} BPM, beat {:.2} \
              ({:?}, {} peers, clock {})",
-            s.raster.name,
+            s.raster.name(),
             s.modules,
             s.passes,
             s.fields_rendered,

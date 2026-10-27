@@ -874,7 +874,7 @@ impl RackView {
                 ui.label(format!("{v:.3}"));
             }
             if source.is_some() {
-                let size = vec2(192.0, 192.0 / probe.aspect);
+                let size = fit(probe.aspect, vec2(192.0, 192.0));
                 ui.add(
                     egui::Image::from_texture(SizedTexture::new(probe.texture, size)).fit_to_exact_size(size),
                 );
@@ -1018,6 +1018,15 @@ fn live_len(list: Live, params: &ParamBank, audio_inputs: &[InputDevice]) -> usi
 }
 
 /// Whether a module's text is a movie file to play.
+/// The biggest size of `aspect` (width / height) that fits in `bounds`.
+pub fn fit(aspect: f32, bounds: Vec2) -> Vec2 {
+    if bounds.x / bounds.y > aspect {
+        vec2(bounds.y * aspect, bounds.y)
+    } else {
+        vec2(bounds.x, bounds.x / aspect)
+    }
+}
+
 fn plays_movies(desc: &ModuleDesc) -> bool {
     desc.text.and_then(|t| t.live) == Some(Live::MovieFile)
 }

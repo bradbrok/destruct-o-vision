@@ -175,7 +175,7 @@ mod tests {
                 assert!(
                     worst < 2e-4,
                     "{} @ {freq} Hz: worst error {worst} cycles",
-                    std.name
+                    std.name()
                 );
             }
         }

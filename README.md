@@ -51,6 +51,8 @@ Monitor, Output, Camera, Movie and TV show live pictures right in their panels.
 
 On a display at a whole multiple of the field rate (120 Hz for NTSC, 100 Hz for PAL), Scan Beam shows each field being drawn top to bottom, as on a real tube. Power switches the set off into a fading dot and back on through a warm-up. Hold a Magnet to the screen for color blotches that stay until you press Degauss. H pos and V pos take video-rate CV, so a VCO can bend the raster like a wobbulator. Patches that used Output's old CRT setting open with a CRT.
 
+**Picture size.** The Raster menu sets the size of the picture: NTSC or PAL, or a size made for a screen. Horizontal goes from 720p to 4K, vertical for phones from 720×1280 to 4K (1080×1920 for Reels, TikTok and Shorts), and there's square and 4:5 portrait. These sizes run at 24, 25, 30, 50 or 60 frames a second, or type any size from 32 to 4096 pixels a side. The patch saves its size, and `--raster 1080x1920p30` picks one at launch. Movies and snapshots come out at the raster's size, and at least 1080 lines tall. Only NTSC and PAL carry color through composite, so on the other sizes the Encoder, VCR and TV are black and white.
+
 **The analog signal path (Phase 2) works.** The Encoder turns RGB into a real composite waveform with sync pulses, color burst and modulated chroma. Composite cables (green) carry that waveform through a VCR and a Cable into a TV.
 
 The TV has to lock onto the signal, using a sync separator, a line oscillator with AFC and a field oscillator with V hold. Rolling, tearing, flagging and lost color come from the signal itself. For example, push an oscillator into the sync with Inject and the picture falls apart.

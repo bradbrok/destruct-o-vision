@@ -911,7 +911,7 @@ mod tests {
             assert!(
                 (l - want).abs() < want * 0.03 + 1e-3,
                 "{} at {gray}: {light:?}, want {want}",
-                raster.name
+                raster.name()
             );
         }
     }

@@ -4,11 +4,18 @@
 //! standard describes the full scan including blanking, so oscillators
 //! evaluated against it behave like hardware locked to (or drifting against)
 //! real sync.
+//!
+//! Besides the broadcast standards, a raster can be any size, at any frame
+//! rate (`RasterStd::progressive`): vertical video for phones, square posts,
+//! 4K. Those are progressive with square pixels, and blanked in the
+//! proportions of HD.
 
 /// Timing of a scanned raster. All sample counts are at `sample_rate_hz`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RasterStd {
-    pub name: &'static str,
+    /// The broadcast standard's name; `None` for a raster sized by hand,
+    /// which `name` names by its size and rate.
+    pub standard: Option<&'static str>,
     pub sample_rate_hz: f64,
     /// Total samples per line, blanking included.
     pub samples_per_line: u32,
@@ -33,7 +40,7 @@ impl RasterStd {
     /// 525/59.94i, sampled per Rec. 601 (13.5 MHz, 858 samples/line).
     /// Field dominance and the exact active window are simplified for now.
     pub const NTSC: Self = Self {
-        name: "NTSC 480i",
+        standard: Some("NTSC 480i"),
         sample_rate_hz: 13_500_000.0,
         samples_per_line: 858,
         lines_per_frame: 525,
@@ -49,7 +56,7 @@ impl RasterStd {
 
     /// 625/50i, sampled per Rec. 601 (13.5 MHz, 864 samples/line).
     pub const PAL: Self = Self {
-        name: "PAL 576i",
+        standard: Some("PAL 576i"),
         sample_rate_hz: 13_500_000.0,
         samples_per_line: 864,
         lines_per_frame: 625,
@@ -65,7 +72,7 @@ impl RasterStd {
 
     /// SMPTE 296M 720p60 (74.25 MHz, 1650 samples/line).
     pub const HD720P60: Self = Self {
-        name: "HD 720p60",
+        standard: Some("HD 720p60"),
         sample_rate_hz: 74_250_000.0,
         samples_per_line: 1650,
         lines_per_frame: 750,
@@ -81,7 +88,7 @@ impl RasterStd {
 
     /// SMPTE 274M 1080p60 (148.5 MHz, 2200 samples/line).
     pub const HD1080P60: Self = Self {
-        name: "HD 1080p60",
+        standard: Some("HD 1080p60"),
         sample_rate_hz: 148_500_000.0,
         samples_per_line: 2200,
         lines_per_frame: 1125,
@@ -96,6 +103,100 @@ impl RasterStd {
     };
 
     pub const ALL: [Self; 4] = [Self::NTSC, Self::PAL, Self::HD720P60, Self::HD1080P60];
+
+    /// Shortest and longest side of a raster sized by hand.
+    pub const MIN_SIDE: u32 = 32;
+    pub const MAX_SIDE: u32 = 4096;
+
+    /// A progressive raster with square pixels, `width` × `height` at `rate`
+    /// frames a second (sides clamped to `MIN_SIDE ..= MAX_SIDE`). 1280×720
+    /// and 1920×1080 take their HD standard's timing, so at 60 they are the
+    /// standard; other sizes are blanked in the same proportions as 1080p and
+    /// 4K (SMPTE 274M, CTA-861), so line-locked oscillators behave alike.
+    pub fn progressive(width: u32, height: u32, rate: f64) -> Self {
+        let width = width.clamp(Self::MIN_SIDE, Self::MAX_SIDE);
+        let height = height.clamp(Self::MIN_SIDE, Self::MAX_SIDE);
+        let rate = rate.clamp(1.0, 240.0);
+        let hd = [Self::HD720P60, Self::HD1080P60]
+            .into_iter()
+            .find(|std| std.active_size() == (width, height));
+        if let Some(std) = hd.filter(|_| rate == 60.0) {
+            return std;
+        }
+        let (samples_per_line, active_start_sample, lines_per_frame, first_active_line) = match hd {
+            Some(std) => (
+                std.samples_per_line,
+                std.active_start_sample,
+                std.lines_per_frame,
+                std.first_active_line,
+            ),
+            None => {
+                // 1080p and 4K blank 7/48 of the width (280 of 1920) and
+                // 1/24 of the height (45 of 1080), and start the picture
+                // 24/35 and 41/45 of the way through those.
+                let h_blank = (width * 7 / 48).max(16);
+                let v_blank = (height / 24).max(4);
+                (
+                    width + h_blank,
+                    h_blank * 24 / 35,
+                    height + v_blank,
+                    v_blank * 41 / 45,
+                )
+            }
+        };
+        Self {
+            standard: None,
+            sample_rate_hz: f64::from(samples_per_line) * f64::from(lines_per_frame) * rate,
+            samples_per_line,
+            lines_per_frame,
+            interlaced: false,
+            active_samples: width,
+            active_start_sample,
+            active_lines_per_field: height,
+            first_active_line,
+            display_aspect: width as f32 / height as f32,
+            subcarrier_hz: 0.0,
+            pal: false,
+        }
+    }
+
+    /// The standard's name, or for a raster sized by hand, its size and rate
+    /// such as "1080×1920p30". `parse` reads either back.
+    pub fn name(&self) -> String {
+        match self.standard {
+            Some(name) => name.to_string(),
+            None => {
+                let (width, height) = self.active_size();
+                format!("{width}×{height}p{}", self.nominal_rate())
+            }
+        }
+    }
+
+    /// A raster by `name`, or by a size and optional rate such as "1080x1920"
+    /// (60 frames a second) or "1080×1920p30". `None` for anything else, or
+    /// a size outside `MIN_SIDE ..= MAX_SIDE`.
+    pub fn parse(name: &str) -> Option<Self> {
+        let name = name.trim();
+        if let Some(std) = Self::ALL.into_iter().find(|std| std.standard == Some(name)) {
+            return Some(std);
+        }
+        let (size, rate) = match name.split_once('p') {
+            Some((size, rate)) => (size, rate.parse::<f64>().ok()?),
+            None => (name, 60.0),
+        };
+        let (width, height) = size.split_once(['x', '×'])?;
+        let (width, height): (u32, u32) = (width.trim().parse().ok()?, height.trim().parse().ok()?);
+        let sides = Self::MIN_SIDE..=Self::MAX_SIDE;
+        if !sides.contains(&width) || !sides.contains(&height) || !(1.0..=240.0).contains(&rate) {
+            return None;
+        }
+        Some(Self::progressive(width, height, rate))
+    }
+
+    /// The field rate, to a thousandth, as it's named: 59.94, 50, 30.
+    pub fn nominal_rate(&self) -> f64 {
+        (self.field_rate_hz() * 1000.0).round() / 1000.0
+    }
 
     /// Horizontal line frequency f_H.
     pub fn line_rate_hz(&self) -> f64 {
@@ -183,13 +284,97 @@ mod tests {
             assert!(
                 std.active_start_sample + std.active_samples <= std.samples_per_line,
                 "{}",
-                std.name
+                std.name()
             );
             let field_lines = std.lines_per_field().floor() as u32;
             assert!(
                 std.first_active_line + std.active_lines_per_field <= field_lines,
                 "{}",
-                std.name
+                std.name()
+            );
+        }
+    }
+
+    #[test]
+    fn sized_rasters_are_progressive_with_square_pixels() {
+        let tall = RasterStd::progressive(1080, 1920, 30.0);
+        assert_eq!(tall.active_size(), (1080, 1920));
+        assert!(!tall.interlaced);
+        assert_eq!(tall.display_aspect, 0.5625);
+        assert!((tall.field_rate_hz() - 30.0).abs() < 1e-9);
+        assert_eq!(tall.name(), "1080×1920p30");
+        // Blanked like 4K, whose CTA-861 timing this gives exactly.
+        let uhd = RasterStd::progressive(3840, 2160, 60.0);
+        assert_eq!((uhd.samples_per_line, uhd.lines_per_frame), (4400, 2250));
+        assert_eq!((uhd.active_start_sample, uhd.first_active_line), (384, 82));
+        assert_eq!(uhd.sample_rate_hz, 594_000_000.0);
+        // The HD sizes keep their standard's timing, and at 60 are it.
+        assert_eq!(RasterStd::progressive(1920, 1080, 60.0), RasterStd::HD1080P60);
+        let hd30 = RasterStd::progressive(1280, 720, 30.0);
+        assert_eq!(hd30.samples_per_line, 1650);
+        assert_eq!(hd30.name(), "1280×720p30");
+        assert_eq!(RasterStd::progressive(10, 99_999, 60.0).active_size(), (32, 4096));
+    }
+
+    #[test]
+    fn names_read_back() {
+        let rasters = [
+            RasterStd::NTSC,
+            RasterStd::PAL,
+            RasterStd::HD720P60,
+            RasterStd::HD1080P60,
+            RasterStd::progressive(1080, 1920, 30.0),
+            RasterStd::progressive(1080, 1350, 25.0),
+            RasterStd::progressive(2160, 3840, 24.0),
+        ];
+        for std in rasters {
+            assert_eq!(RasterStd::parse(&std.name()), Some(std), "{}", std.name());
+        }
+        assert_eq!(
+            RasterStd::parse("1080x1920"),
+            Some(RasterStd::progressive(1080, 1920, 60.0))
+        );
+        assert_eq!(RasterStd::parse("1920x1080p60"), Some(RasterStd::HD1080P60));
+        assert_eq!(
+            RasterStd::parse("1080 × 1080p50"),
+            Some(RasterStd::progressive(1080, 1080, 50.0))
+        );
+        for bad in [
+            "",
+            "SECAM",
+            "1080",
+            "1080x",
+            "x1920",
+            "8x8",
+            "1080x9000",
+            "1080x1920p0",
+            "1080x1920pfast",
+        ] {
+            assert_eq!(RasterStd::parse(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn sized_rasters_fit_their_scan() {
+        for (w, h) in [
+            (32, 32),
+            (720, 1280),
+            (1080, 1080),
+            (1080, 1350),
+            (2160, 3840),
+            (4096, 4096),
+        ] {
+            let std = RasterStd::progressive(w, h, 60.0);
+            assert!(
+                std.active_start_sample + std.active_samples <= std.samples_per_line,
+                "{}",
+                std.name()
+            );
+            assert!(std.first_active_line >= 1, "{}", std.name());
+            assert!(
+                std.first_active_line + std.active_lines_per_field <= std.lines_per_frame,
+                "{}",
+                std.name()
             );
         }
     }

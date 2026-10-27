@@ -48,6 +48,8 @@ pub struct ModuleState {
 pub struct Patch {
     #[serde(default = "Patch::current_version")]
     pub version: u32,
+    /// The raster, by `RasterStd::name`: "NTSC 480i", or a size and rate
+    /// such as "1080×1920p30".
     #[serde(default)]
     pub raster: Option<String>,
     /// Beats a minute of the global beat clock.
