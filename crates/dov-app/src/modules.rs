@@ -217,6 +217,7 @@ mod tests {
 
     #[test]
     fn a_broken_edit_keeps_the_last_good_version() {
+        let _lock = crate::test_lock();
         let dir = std::env::temp_dir().join(format!("dov-user-modules-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

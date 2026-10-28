@@ -248,6 +248,7 @@ mod tests {
     /// and only for example modules no other test uses.
     #[test]
     fn art_places_controls_or_sits_behind_the_layout() {
+        let _lock = crate::test_lock();
         let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/modules");
         for ty in dov_modules::load_package(&examples.join("example.starter")).loaded {
             dov_modules::install(ty);

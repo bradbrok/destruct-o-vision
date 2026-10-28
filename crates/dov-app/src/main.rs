@@ -12,6 +12,14 @@ mod rack;
 mod rack_view;
 mod ui;
 
+/// Held by tests that replace the app's global registries (module types
+/// and panel art), so they don't run over each other.
+#[cfg(test)]
+fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
