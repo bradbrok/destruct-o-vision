@@ -14,7 +14,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let row = c.row0 + i32(gid.x);
     let a = lp_coef(c, knob(1u));
-    let delay = us(c, knob(3u));
+    let delay = picture_us(c, knob(3u));
     let mains = select(60.0, 50.0, c.pal);
     let field = u.info.field;
     var y = c_at(c, row, 0);
@@ -23,7 +23,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // A delayed echo: a reflection off a building, or a mismatched cable.
         var v = c_at(c, row, s) + knob(2u) * c_time(c, t - delay);
         // Hum: a slow bar rolling through the picture at mains frequency.
-        v = v + knob(4u) * 0.25 * sin(TAU * (u.extra[0].w + t * mains / c.fs));
+        v = v + knob(4u) * 0.25 * sin(TAU * (u.extra[0].w + t * mains / u.info.sample_rate));
         // A stray carrier: diagonal herringbone.
         let ip = u.extra[0].x + fract(f32(row) * u.extra[0].y) + f32(s) * u.extra[0].z;
         v = v + knob(5u) * sin(TAU * ip);

@@ -6,9 +6,6 @@
 @group(0) @binding(16) var cout: texture_storage_2d<r32float, write>;
 
 const SLICE: f32 = -0.2;
-// Search window around 0H, in samples.
-const EARLY: i32 = 40;
-const LATE: i32 = 80;
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -18,10 +15,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let row = c.row0 + i32(gid.x);
     let row_t = f32(row * c.spl);
+    // Search window around 0H: 40 samples early to 80 late, at NTSC's scale.
+    let early = i32(samples(c, 40.0));
+    let late = i32(samples(c, 80.0));
     var edge = 0.0;
     var found = false;
-    var prev = c_time(c, row_t - f32(EARLY + 1));
-    for (var k = -EARLY; k < LATE; k = k + 1) {
+    var prev = c_time(c, row_t - f32(early + 1));
+    for (var k = -early; k < late; k = k + 1) {
         let v = c_time(c, row_t + f32(k));
         if (!found && prev >= SLICE && v < SLICE) {
             edge = f32(k) - 1.0 + (prev - SLICE) / max(prev - v, 1e-6);

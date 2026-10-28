@@ -219,6 +219,7 @@ mod tests {
             slots: &slots,
             params,
             inputs: &inputs,
+            history: 0,
             extra: &mut extra,
             outputs: &mut outputs,
         });

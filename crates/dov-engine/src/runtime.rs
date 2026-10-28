@@ -29,8 +29,12 @@ use crate::transport::Beat;
 const COMPOSITE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
 /// Format of uploaded camera frames and pictures.
 const CAMERA_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
-/// Scan lines a TV can draw per field (see tv_scan.wgsl).
-const TV_MAX_BEAMS: u32 = 640;
+/// Scan lines a TV can draw per field (see tv_scan.wgsl): a field's
+/// lines, and more for a line oscillator running fast, up to the 10% its
+/// period can stray.
+fn tv_max_beams(raster: &RasterStd) -> u32 {
+    (raster.lines_per_field() * 1.12).ceil() as u32 + 2
+}
 
 /// A signal texture: a woven video frame at the raster's active size, or a
 /// composite frame covering the whole scan.
@@ -77,8 +81,11 @@ fn composite_size(raster: &RasterStd) -> (u32, u32) {
     (raster.samples_per_line, raster.lines_per_frame)
 }
 
-/// GPU memory a single history ring may use, and its longest history.
+/// GPU memory a single history ring may use, and its longest history. A
+/// composite ring (a VCR's tape) holds whole scans at full precision, so it
+/// gets less, or a few VCRs in a chain would use gigabytes.
 const RING_BUDGET_BYTES: u64 = 400 << 20;
+const COMPOSITE_RING_BUDGET_BYTES: u64 = 160 << 20;
 const RING_MAX_FIELDS: u32 = 120;
 
 /// A module's history of past fields (see `RingSpec`).
@@ -91,12 +98,23 @@ struct Ring {
 }
 
 impl Ring {
-    /// Up to `fields` of history (the module's request), within the budget.
-    fn new(device: &wgpu::Device, raster: &RasterStd, fields: u32) -> Self {
-        let (width, height) = raster.active_size();
-        let frame = u64::from(width) * u64::from(height) * 8;
+    /// Up to `fields` of history (the module's request) of a `kind` of
+    /// signal, within the budget.
+    fn new(device: &wgpu::Device, raster: &RasterStd, fields: u32, kind: PortKind) -> Self {
+        let (format, (width, height), budget) = match kind {
+            PortKind::Composite => (
+                COMPOSITE_FORMAT,
+                composite_size(raster),
+                COMPOSITE_RING_BUDGET_BYTES,
+            ),
+            PortKind::Mono | PortKind::Rgb | PortKind::Control => {
+                (SIGNAL_FORMAT, raster.active_size(), RING_BUDGET_BYTES)
+            }
+        };
+        let texel = u64::from(format.block_copy_size(None).unwrap_or(8));
+        let frame = u64::from(width) * u64::from(height) * texel;
         let wanted = u64::from(fields.clamp(2, RING_MAX_FIELDS));
-        let depth = (RING_BUDGET_BYTES / frame).clamp(2, wanted) as u32;
+        let depth = (budget / frame).clamp(2, wanted) as u32;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("history"),
             size: wgpu::Extent3d {
@@ -107,7 +125,7 @@ impl Ring {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: SIGNAL_FORMAT,
+            format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -280,6 +298,55 @@ impl CameraState {
     }
 }
 
+/// Where a kernel reads the floats its module's behavior hands it each
+/// field (`Behavior::samples`): a few per composite row, or a field's audio.
+const SAMPLES_BINDING: u32 = 32;
+/// Points an XY display draws through in a field, at most.
+const VECTOR_MAX_POINTS: u32 = 16384;
+
+/// Room for a behavior's samples: four floats a composite row, or two for
+/// each of an XY display's points.
+fn samples_buffer(device: &wgpu::Device, raster: &RasterStd) -> wgpu::Buffer {
+    let floats = (u64::from(raster.lines_per_frame) * 4).max(u64::from(VECTOR_MAX_POINTS) * 2);
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("samples"),
+        size: floats * 4,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+/// Does a kernel read samples from its behavior?
+fn takes_samples(kernel: Kernel) -> bool {
+    matches!(kernel, Kernel::Vector | Kernel::Composite(CompositeOp::Rf))
+}
+
+/// An XY display's working state: the beam's energy this field, in fixed
+/// point per sample of the field's lines, and the phosphor's glow per
+/// sample of the whole frame.
+struct VectorState {
+    accum: wgpu::Buffer,
+    glow: wgpu::Buffer,
+}
+
+impl VectorState {
+    fn new(device: &wgpu::Device, raster: &RasterStd) -> Self {
+        let (width, height) = raster.active_size();
+        let buffer = |label, samples: u32| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: u64::from(width) * u64::from(samples) * 4,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        };
+        Self {
+            accum: buffer("vector beam", raster.active_lines_per_field),
+            glow: buffer("vector phosphor", height),
+        }
+    }
+}
+
 /// A picture module's current picture, as uploaded.
 struct PictureState {
     frame: Arc<Frame>,
@@ -322,9 +389,10 @@ impl TvState {
             view_formats: &[],
         });
         Self {
-            sync: buffer("tv sync", u64::from(height) * 16),
+            // Per row: sync and burst, then further on, its level.
+            sync: buffer("tv sync", u64::from(height) * 32),
             scan: buffer("tv scan", 32),
-            beams: buffer("tv beams", u64::from(TV_MAX_BEAMS + 1) * 16),
+            beams: buffer("tv beams", u64::from(tv_max_beams(raster) + 1) * 16),
             decoded: decoded.create_view(&Default::default()),
         }
     }
@@ -358,6 +426,10 @@ enum Slot {
         k: usize,
         write: bool,
     },
+    /// What the module's behavior handed over this field.
+    Samples,
+    VectorBeam,
+    VectorGlow,
 }
 
 /// How many workgroups a pass needs.
@@ -374,6 +446,8 @@ enum Dispatch {
     Beams,
     /// 16×16 tiles over the n×n blocks of one field's active picture.
     Blocks(u32),
+    /// One invocation per point an XY display can draw.
+    Points,
 }
 
 struct PassSpec {
@@ -408,6 +482,9 @@ struct Instance {
     picture: Option<PictureState>,
     tv: Option<TvState>,
     ring: Option<Ring>,
+    /// For kernels that read their behavior's samples.
+    samples: Option<wgpu::Buffer>,
+    vector: Option<VectorState>,
     /// What each stage of a staged kernel stores for the passes after it.
     stages: Vec<wgpu::TextureView>,
     /// Per output: its brightness meter, when a cable takes it into a control input.
@@ -438,6 +515,8 @@ impl Instance {
             picture: None,
             tv: None,
             ring: None,
+            samples: None,
+            vector: None,
             stages: Vec::new(),
             meters: desc.outputs.iter().map(|_| None).collect(),
             text: None,
@@ -607,6 +686,8 @@ impl Runtime {
             inst.store = None;
             inst.tv = None;
             inst.ring = None;
+            inst.samples = None;
+            inst.vector = None;
             inst.stages.clear();
             inst.meters.iter_mut().for_each(|m| *m = None);
         }
@@ -699,6 +780,9 @@ impl Runtime {
                 Kernel::Composite(CompositeOp::Tv) if inst.tv.is_none() => {
                     inst.tv = Some(TvState::new(device, &raster));
                 }
+                Kernel::Vector if inst.vector.is_none() => {
+                    inst.vector = Some(VectorState::new(device, &raster));
+                }
                 Kernel::Staged { stages, .. } if inst.stages.is_empty() => {
                     inst.stages = stages
                         .iter()
@@ -707,10 +791,14 @@ impl Runtime {
                 }
                 _ => {}
             }
+            if takes_samples(desc.kernel) && inst.samples.is_none() {
+                inst.samples = Some(samples_buffer(device, &raster));
+            }
             if let Some(spec) = desc.ring
                 && inst.ring.is_none()
             {
-                inst.ring = Some(Ring::new(device, &raster, spec.fields));
+                let kind = desc.outputs[spec.output].kind;
+                inst.ring = Some(Ring::new(device, &raster, spec.fields, kind));
             }
             self.pipelines
                 .entry(type_key(inst.ty))
@@ -860,6 +948,18 @@ impl Runtime {
                         Some(view) => wgpu::BindingResource::TextureView(view),
                         None => return Vec::new(),
                     },
+                    Slot::Samples => match &inst.samples {
+                        Some(b) => b.as_entire_binding(),
+                        None => return Vec::new(),
+                    },
+                    Slot::VectorBeam => match &inst.vector {
+                        Some(v) => v.accum.as_entire_binding(),
+                        None => return Vec::new(),
+                    },
+                    Slot::VectorGlow => match &inst.vector {
+                        Some(v) => v.glow.as_entire_binding(),
+                        None => return Vec::new(),
+                    },
                 };
                 entries.push(wgpu::BindGroupEntry { binding, resource });
             }
@@ -900,6 +1000,7 @@ impl Runtime {
             slots: &slots,
             params: &inst.params,
             inputs: &values,
+            history: inst.ring.as_ref().map_or(0, |r| r.depth),
             extra: &mut inst.extra,
             outputs: &mut inst.control_out,
         };
@@ -967,9 +1068,30 @@ impl Runtime {
             Kernel::Composite(_) => {
                 u.extra[4..8].copy_from_slice(&composite_timing(&self.raster, field));
             }
-            Kernel::Pointwise(_) | Kernel::LineScan(_) | Kernel::Staged { .. } | Kernel::Control => {}
+            Kernel::Pointwise(_)
+            | Kernel::LineScan(_)
+            | Kernel::Staged { .. }
+            | Kernel::Vector
+            | Kernel::Control => {}
         }
         u
+    }
+
+    /// Uploads what a module's behavior hands its kernel this field.
+    fn update_samples(&self, queue: &wgpu::Queue, i: usize) {
+        let inst = &self.instances[i];
+        let (Some(buffer), Some(behavior)) = (&inst.samples, &inst.behavior) else {
+            return;
+        };
+        let samples = behavior.samples();
+        let room = (buffer.size() / 4) as usize;
+        if !samples.is_empty() {
+            queue.write_buffer(
+                buffer,
+                0,
+                bytemuck::cast_slice(&samples[..samples.len().min(room)]),
+            );
+        }
     }
 
     /// Uploads a picture module's picture when its behavior has a new one.
@@ -1277,6 +1399,7 @@ impl Runtime {
                 _ => {}
             }
             self.update_text(device, queue, i);
+            self.update_samples(queue, i);
         }
 
         let info = field_info(&raster, field);
@@ -1294,6 +1417,10 @@ impl Runtime {
                 0,
                 bytemuck::bytes_of(&self.uniforms(i, info, field)),
             );
+            if let Some(v) = &inst.vector {
+                // The beam's energy is counted afresh each field.
+                encoder.clear_buffer(&v.accum, 0, None);
+            }
             for (pass, bind_group) in passes.iter().zip(&inst.bind_groups) {
                 let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: Some(inst.ty.desc.id),
@@ -1306,7 +1433,8 @@ impl Runtime {
                     Dispatch::Lines => (info.lines.div_ceil(64), 1),
                     Dispatch::CompositeRows => (composite_rows.div_ceil(64), 1),
                     Dispatch::Single => (1, 1),
-                    Dispatch::Beams => (info.width.div_ceil(16), TV_MAX_BEAMS.div_ceil(16)),
+                    Dispatch::Beams => (info.width.div_ceil(16), tv_max_beams(&raster).div_ceil(16)),
+                    Dispatch::Points => (VECTOR_MAX_POINTS.div_ceil(64), 1),
                     Dispatch::Blocks(n) => (
                         info.width.div_ceil(n).div_ceil(16),
                         info.lines.div_ceil(n).div_ceil(16),
@@ -1464,10 +1592,16 @@ pub(crate) fn composite_timing(raster: &RasterStd, field: u64) -> [[f32; 4]; 4] 
         0 => (0, field2_row),
         _ => (field2_row, lines - field2_row),
     };
-    let line_fract = raster.subcarrier_cycles_per_line().rem_euclid(1.0);
-    let sample_inc = raster.subcarrier_hz / raster.sample_rate_hz;
+    let composite = raster.composite();
+    let line_fract = composite.cycles_per_line(raster).rem_euclid(1.0);
+    let sample_inc = composite.subcarrier_hz / raster.sample_rate_hz;
     [
-        [f32::from(u8::from(raster.interlaced)), 0.0, 0.0, 0.0],
+        [
+            f32::from(u8::from(raster.interlaced)),
+            composite.sync_clock_hz as f32,
+            composite.picture_clock_hz as f32,
+            0.0,
+        ],
         [
             line_fract as f32,
             sample_inc as f32,
@@ -1490,17 +1624,25 @@ pub(crate) fn composite_timing(raster: &RasterStd, field: u64) -> [[f32; 4]; 4] 
 }
 
 /// Frame store params for `feedback.wgsl`, which applies their CV per sample:
-/// knob value and CV scale for zoom, rotate, x, y and gain, then the mirror.
+/// knob value and CV scale for zoom, rotate, x, y and gain, then the mirror,
+/// then hue and blur, then the key.
 fn feedback_params(inst: &Instance, slots: &[f32], inputs: &[f32]) -> [[f32; 4]; EXTRA_SLOTS] {
     let desc = &inst.ty.desc;
-    let mut extra = inst.extra;
-    for (k, e) in extra.iter_mut().enumerate().take(5) {
+    let with_cv = |k: usize| {
         let scale = desc
             .cv_slot(k)
             .map_or(0.0, |(_, atten)| slots[atten] * desc.params[k].span());
-        *e = [slots[k], scale, 0.0, 0.0];
+        [slots[k], scale]
+    };
+    let mut extra = inst.extra;
+    for (k, e) in extra.iter_mut().enumerate().take(5) {
+        let [knob, scale] = with_cv(k);
+        *e = [knob, scale, 0.0, 0.0];
     }
     extra[5] = [choice_value(desc, slots, inputs, 5) as f32, 0.0, 0.0, 0.0];
+    let ([hue, hue_cv], [blur, blur_cv]) = (with_cv(6), with_cv(7));
+    extra[6] = [hue, hue_cv, blur, blur_cv];
+    extra[7] = [slots[8], 0.0, 0.0, 0.0];
     extra
 }
 
@@ -1546,6 +1688,9 @@ fn pass_specs(ty: &ModuleType) -> Result<Vec<PassSpec>, String> {
     let composite = |label, parts: &[&str], inputs: usize| {
         let mut slots = vec![(0, Uniforms)];
         slots.extend((0..inputs).map(|j| (INPUT_BINDING_BASE + j as u32, Input(j))));
+        if desc.ring.is_some() {
+            slots.push((RING_BINDING, Ring));
+        }
         outputs(&mut slots);
         PassSpec {
             label,
@@ -1625,7 +1770,12 @@ fn pass_specs(ty: &ModuleType) -> Result<Vec<PassSpec>, String> {
                 CompositeOp::Encode => vec![composite("encoder", &[c::ENCODE], 1)],
                 CompositeOp::Inject => vec![composite("inject", &[c::READ, c::INJECT], 2)],
                 CompositeOp::Cable => vec![composite("cable", &[c::READ, c::CABLE], 1)],
-                CompositeOp::Vcr => vec![composite("vcr", &[c::READ, c::VCR], 1)],
+                CompositeOp::Rf => {
+                    let mut rf = composite("rf", &[c::READ, c::RF], 2);
+                    rf.slots.push((SAMPLES_BINDING, Samples));
+                    vec![rf]
+                }
+                CompositeOp::Vcr => vec![composite("vcr", &[c::TAPE, c::VCR], 1)],
                 CompositeOp::Tbc => vec![composite("tbc", &[c::READ, c::TBC], 1)],
                 CompositeOp::Tv => vec![
                     PassSpec {
@@ -1636,7 +1786,7 @@ fn pass_specs(ty: &ModuleType) -> Result<Vec<PassSpec>, String> {
                     },
                     PassSpec {
                         label: "tv scan",
-                        source: codegen::composite_shader(&[c::TV_SCAN]),
+                        source: codegen::composite_shader(&[c::TV_STATE, c::TV_SCAN]),
                         slots: vec![
                             (0, Uniforms),
                             (20, TvSync { write: false }),
@@ -1647,8 +1797,13 @@ fn pass_specs(ty: &ModuleType) -> Result<Vec<PassSpec>, String> {
                     },
                     PassSpec {
                         label: "tv decode",
-                        source: codegen::composite_shader(&[c::READ, c::TV_COMMON, c::TV_DECODE]),
-                        slots: vec![(0, Uniforms), (1, Input(0)), (23, TvDecodedWrite)],
+                        source: codegen::composite_shader(&[
+                            c::READ,
+                            c::TV_COMMON,
+                            c::TV_STATE,
+                            c::TV_DECODE,
+                        ]),
+                        slots: vec![(0, Uniforms), (1, Input(0)), (21, TvScan), (23, TvDecodedWrite)],
                         dispatch: Dispatch::CompositeRows,
                     },
                     PassSpec {
@@ -1664,6 +1819,24 @@ fn pass_specs(ty: &ModuleType) -> Result<Vec<PassSpec>, String> {
                     },
                 ],
             }
+        }
+        Kernel::Vector => {
+            let mut glow = vec![(0, Uniforms), (20, VectorBeam), (21, VectorGlow)];
+            outputs(&mut glow);
+            vec![
+                PassSpec {
+                    label: "vector beam",
+                    source: codegen::vector_shader(codegen::VECTOR_BEAM),
+                    slots: vec![(0, Uniforms), (SAMPLES_BINDING, Samples), (20, VectorBeam)],
+                    dispatch: Dispatch::Points,
+                },
+                PassSpec {
+                    label: "vector glow",
+                    source: codegen::vector_shader(codegen::VECTOR_GLOW),
+                    slots: glow,
+                    dispatch: Dispatch::Pixels,
+                },
+            ]
         }
         Kernel::Control => Vec::new(),
     })
@@ -1747,6 +1920,8 @@ fn layout_entry(binding: u32, slot: Slot, ty: &ModuleType) -> wgpu::BindGroupLay
         Slot::TvSync { write } | Slot::TvBeams { write } => storage_buffer(!write),
         Slot::TvScan => storage_buffer(false),
         Slot::TvDecodedWrite => storage_texture(SIGNAL_FORMAT),
+        Slot::Samples => storage_buffer(true),
+        Slot::VectorBeam | Slot::VectorGlow => storage_buffer(false),
         Slot::Stage { write: false, .. } => texture(false),
         Slot::Stage { write: true, .. } => storage_texture(STAGE_FORMAT),
         Slot::Ring => wgpu::BindingType::Texture {
@@ -1852,7 +2027,8 @@ mod tests {
         assert_eq!(f1[1][0], 0.5, "NTSC subcarrier advances half a cycle per line");
         let hd = composite_timing(&RasterStd::HD1080P60, 0);
         assert_eq!((hd[3][2], hd[3][3]), (0.0, 1125.0));
-        assert_eq!(hd[1][1], 0.0, "no subcarrier in HD");
+        assert_eq!(hd[1][0], 0.5, "HD carries NTSC's subcarrier, scaled");
+        assert!(hd[0][1] > 13.5e6 && hd[0][2] > 13.5e6, "and its clocks");
     }
 
     fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {

@@ -38,8 +38,8 @@ PICTURE SIZE
 The Raster menu sets the picture's size: NTSC or PAL, or sizes for screens,
 horizontal, vertical (1080x1920 for Reels, TikTok and Shorts), square and
 4:5, at the frame rate you pick, or any size you type. Movies and snapshots
-come out at that size. Color through the Encoder, VCR and TV needs NTSC or
-PAL.
+come out at that size. On any size, the Encoder, VCR and TV carry NTSC
+scaled to the picture, in color.
 
 PICTURE TUBE
 Output shows the picture clean. Put a CRT in its place to see it on a picture

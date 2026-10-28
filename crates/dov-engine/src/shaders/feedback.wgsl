@@ -7,7 +7,9 @@
 // 2 x, 3 y, 4 gain:
 //   extra[k] = (knob value, CV scale = attenuverter × span)
 //   extra[5].x = mirror flags
-// CV inputs are module inputs 1..=5, in the same order.
+//   extra[6] = hue (degrees a pass) and blur (samples): knob and CV scale each
+//   extra[7].x = key
+// CV inputs are module inputs 1..=7: zoom, rotate, x, y, gain, hue, blur.
 
 @group(0) @binding(1) var store: texture_2d<f32>;
 @group(0) @binding(2) var cv_zoom: texture_2d<f32>;
@@ -15,14 +17,36 @@
 @group(0) @binding(4) var cv_x: texture_2d<f32>;
 @group(0) @binding(5) var cv_y: texture_2d<f32>;
 @group(0) @binding(6) var cv_gain: texture_2d<f32>;
+@group(0) @binding(7) var cv_hue: texture_2d<f32>;
+@group(0) @binding(8) var cv_blur: texture_2d<f32>;
 @group(0) @binding(16) var out_0: texture_storage_2d<rgba16float, write>;
 
 // Param `k` at this sample: its knob plus whatever is patched into its CV
 // jack (input `k + 1`): a video signal, a control value, or nothing.
 fn param_at(k: u32, patched: vec3<f32>) -> f32 {
-    let j = k + 1u;
+    return cv_param(u.extra[k].xy, k + 1u, patched);
+}
+
+// A param whose knob and CV scale are `knob`, with its CV at input `j`.
+fn cv_param(knob: vec2<f32>, j: u32, patched: vec3<f32>) -> f32 {
     let cv = select(u.inputs[j].xyz, patched, u.inputs[j].w > 0.5);
-    return u.extra[k].x + luma(cv) * u.extra[k].y;
+    return knob.x + luma(cv) * knob.y;
+}
+
+// `rgb` with its hue turned by `angle` radians, about the YIQ gray axis.
+fn turn_hue(rgb: vec3<f32>, angle: f32) -> vec3<f32> {
+    let y = dot(rgb, vec3<f32>(0.299, 0.587, 0.114));
+    let i = dot(rgb, vec3<f32>(0.596, -0.274, -0.322));
+    let q = dot(rgb, vec3<f32>(0.211, -0.523, 0.312));
+    let c = cos(angle);
+    let s = sin(angle);
+    let i2 = i * c - q * s;
+    let q2 = i * s + q * c;
+    return vec3<f32>(
+        y + 0.956 * i2 + 0.621 * q2,
+        y - 0.272 * i2 - 0.647 * q2,
+        y - 1.106 * i2 + 1.703 * q2,
+    );
 }
 
 fn load_line(x: i32, line: i32, fresh: i32) -> vec3<f32> {
@@ -85,7 +109,26 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let src = (m * (q - shift)) / zoom / scale + vec2<f32>(0.5);
     var color = vec3<f32>(0.0);
     if (all(src >= vec2<f32>(0.0)) && all(src <= vec2<f32>(1.0))) {
-        color = sample_field(src) * gain;
+        color = sample_field(src);
+        // Blur: four more taps around it, `blur` samples out, so each pass
+        // round the loop spreads the picture a little further.
+        let blur = max(cv_param(u.extra[6].zw, 7u, textureLoad(cv_blur, coord, 0).rgb), 0.0);
+        if (blur > 0.01) {
+            let d = blur / vec2<f32>(f32(u.info.width), f32(u.info.height));
+            color = (color
+                + sample_field(src + d) + sample_field(src - d)
+                + sample_field(src + vec2<f32>(d.x, -d.y)) + sample_field(src + vec2<f32>(-d.x, d.y))) / 5.0;
+        }
+        let hue = cv_param(u.extra[6].xy, 6u, textureLoad(cv_hue, coord, 0).rgb);
+        if (hue != 0.0) {
+            color = turn_hue(color, radians(hue));
+        }
+        // Key: only what's brighter than it comes round again.
+        let key = u.extra[7].x;
+        if (key > 0.0) {
+            color = color * smoothstep(key - 0.04, key + 0.04, luma(color));
+        }
+        color = color * gain;
     }
     textureStore(out_0, coord, vec4<f32>(color, 1.0));
 }

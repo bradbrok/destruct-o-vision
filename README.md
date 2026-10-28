@@ -14,12 +14,13 @@ The showcase patch, which the app opens with, works like this:
 
 The tearing, noise bars and soft color all come from the emulated signal, not from a filter. [Watch the full demo video](https://github.com/bradbrok/destruct-o-vision/releases/download/v0.1.1/destruct-o-vision-demo.mp4) (15 s, 60 fps).
 
-**Status: pre-alpha.** The app has a VCV-style rack: modules sit on rails, and you patch them with cables. It ships with 51 modules:
-- **Sources:** VCO, Ramps, Shape, Noise, a live Camera and a Movie player (macOS), Text, 3D Text, and 3D Object
+**Status: pre-alpha.** The app has a VCV-style rack: modules sit on rails, and you patch them with cables. It ships with 56 modules:
+- **Sources:** VCO, Ramps, Shape, Noise, a live Camera and a Movie player (macOS), Text, 3D Text, 3D Object, and Vector (an XY display that draws audio with its beam)
 - **Processing:** Mixer, Blend (two inputs, all of Photoshop's blend modes), VCA, Folder, Keyer, Chroma Key, a line-scan Filter, Blur (its radius takes video-rate CV, for blurring parts of the picture), Edge, Posterize
 - **Color:** Colorize, RGB Combine/Split
-- **Space & time:** Feedback frame store, Delay (echo, freeze, and slit-scan through its Time CV), Displace, Mirror, Mosaic, Tile (repeat, mirror or brick grids that scroll), Transform (zoom, rotate, stretch, move), Warp (swirl, bulge, ripple, wave), Polar (planet, tunnel, unwrap), Kaleido
-- **Analog signal path:** Encoder, Inject, Cable, VCR, TBC, TV
+- **Space & time:** Feedback frame store (with hue, blur and a key inside the loop), Delay (echo, freeze, and slit-scan through its Time CV), Displace, Mirror, Mosaic, Tile (repeat, mirror or brick grids that scroll), Transform (zoom, rotate, stretch, move), Warp (swirl, bulge, ripple, wave), Polar (planet, tunnel, unwrap), Kaleido
+- **Analog signal path:** Encoder, Inject, Cable, RF (broadcast and tuning), VCR (six tape formats, with Pause and Search), TBC, TV
+- **Analog picture:** Tube Camera (lag, comet tails, bloom, burn), Telecine (3:2 pulldown, grain, dust, scratches), Fields (interlace gone wrong)
 - **Digital glitch:** Datamosh, Pixel Sort, JPEG (real compression, and corruption), Slice (tearing), Bits (bitwise ops between pictures)
 - **Control:** LFO (Hz, or a note value on the global tempo; Trig output), Macros, Audio In (any connected input and channel, picked by name; a resonant low/band/high-pass filter into an envelope follower, with Gate and Trig), MIDI Notes (pitch, gate, velocity, trigger), MIDI CC (four controllers, with learn)
 - **I/O:** Monitor, Output, CRT
@@ -51,11 +52,13 @@ Monitor, Output, Camera, Movie and TV show live pictures right in their panels.
 
 On a display at a whole multiple of the field rate (120 Hz for NTSC, 100 Hz for PAL), Scan Beam shows each field being drawn top to bottom, as on a real tube. Power switches the set off into a fading dot and back on through a warm-up. Hold a Magnet to the screen for color blotches that stay until you press Degauss. H pos and V pos take video-rate CV, so a VCO can bend the raster like a wobbulator. Patches that used Output's old CRT setting open with a CRT.
 
-**Picture size.** The Raster menu sets the size of the picture: NTSC or PAL, or a size made for a screen. Horizontal goes from 720p to 4K, vertical for phones from 720×1280 to 4K (1080×1920 for Reels, TikTok and Shorts), and there's square and 4:5 portrait. These sizes run at 24, 25, 30, 50 or 60 frames a second, or type any size from 32 to 4096 pixels a side. The patch saves its size, and `--raster 1080x1920p30` picks one at launch. Movies and snapshots come out at the raster's size, and at least 1080 lines tall. Only NTSC and PAL carry color through composite, so on the other sizes the Encoder, VCR and TV are black and white.
+**Picture size.** The Raster menu sets the size of the picture: NTSC or PAL, or a size made for a screen. Horizontal goes from 720p to 4K, vertical for phones from 720×1280 to 4K (1080×1920 for Reels, TikTok and Shorts), and there's square and 4:5 portrait. These sizes run at 24, 25, 30, 50 or 60 frames a second, or type any size from 32 to 4096 pixels a side. The patch saves its size, and `--raster 1080x1920p30` picks one at launch. Movies and snapshots come out at the raster's size, and at least 1080 lines tall. Composite works at every size: beyond NTSC and PAL, it carries NTSC scaled to the picture, color included, so a VCR smears a vertical picture as much as a 4:3 one.
 
 **The analog signal path (Phase 2) works.** The Encoder turns RGB into a real composite waveform with sync pulses, color burst and modulated chroma. Composite cables (green) carry that waveform through a VCR and a Cable into a TV.
 
-The TV has to lock onto the signal, using a sync separator, a line oscillator with AFC and a field oscillator with V hold. Rolling, tearing, flagging and lost color come from the signal itself. For example, push an oscillator into the sync with Inject and the picture falls apart.
+The TV has to lock onto the signal, using a sync separator, a line oscillator with AFC and a field oscillator with V hold. Rolling, tearing, flagging and lost color come from the signal itself. For example, push an oscillator into the sync with Inject and the picture falls apart. Its decoder is a notch, a comb or an adaptive comb, and its AGC can pump with the picture.
+
+The VCR records what it plays into a tape memory. Pause holds a field with its noise bar, Search spools through the tape with noise bars across the picture, and Play carries on from wherever the tape is; each change makes the servo hunt for a moment. Formats from VHS to U-matic and Hi8 set its bandwidth, noise and dropouts, and Clog and Crease damage the tape. RF puts the signal on a channel: weaken it into snow, detune it until the color goes, bring in the station next door, and put live audio on the sound carrier for buzz bars.
 
 ![The showcase patch in the rack: 19 modules and 23 cables over three rows, with live pictures on the TV and Output panels](media/rack.jpg)
 

@@ -1,25 +1,14 @@
 // TV pass 2, deflection: one invocation simulates the line and field
 // oscillators across this field and records where each scan line starts
-// and how far down the screen it is.
-// Knobs: 5 H hold, 6 AFC speed, 7 V hold.
-
-struct ScanState {
-    next_t: f32,
-    period: f32,
-    trig: f32,
-    integ: f32,
-    valid: f32,
-    _pad0: f32,
-    _pad1: f32,
-    _pad2: f32,
-}
+// and how far down the screen it is. It also follows the signal's level
+// for the AGC and the burst's strength for the color killer.
+// Knobs: 5 H hold, 6 AFC speed, 7 V hold, 13 killer.
 
 @group(0) @binding(20) var<storage, read> sync_info: array<vec4<f32>>;
 @group(0) @binding(21) var<storage, read_write> st: ScanState;
 // beams[0].x = count; beams[1 + i] = (start time in samples, lines since vertical retrace, 0, 0).
 @group(0) @binding(22) var<storage, read_write> beams: array<vec4<f32>>;
 
-const MAX_BEAMS: i32 = 640;
 // Per-half-line RC constant and trigger level of the vertical integrator.
 // Normal lines sit near 0.07, broad pulses at 0.85: the integrator reads
 // about 0.46 after one broad half-line and 0.66 after two, so it fires at
@@ -43,6 +32,9 @@ fn main() {
     var period = st.period;
     var integ = st.integ;
     if (st.valid < 0.5) {
+        st.agc = 1.0;
+        st.burst = BURST_LEVEL;
+        st.color = 1.0;
         t = t0;
         trig = t0 - field_lines * spl;
         period = nominal;
@@ -91,9 +83,11 @@ fn main() {
     if (abs(period / nominal - 1.0) > 0.1) {
         period = nominal;
     }
+    // The buffer holds the count and then as many lines as a field can scan.
+    let max_beams = i32(arrayLength(&beams)) - 1;
     var n = 0;
     loop {
-        if (t >= t1 || n >= MAX_BEAMS) {
+        if (t >= t1 || n >= max_beams) {
             break;
         }
         let r = i32(floor(t / spl));
@@ -128,6 +122,31 @@ fn main() {
         t = t + period;
     }
     beams[0] = vec4<f32>(f32(n), 0.0, 0.0, 0.0);
+
+    // The picture's average level and the burst's strength over this
+    // field's picture lines.
+    var level = 0.0;
+    var strength = 0.0;
+    var counted = 0.0;
+    for (var r = c.row0 + c.first_active; r < c.row0 + c.rows; r = r + 1) {
+        level = level + sync_info[c.lines + r].x;
+        strength = strength + sync_info[r].w;
+        counted = counted + 1.0;
+    }
+    counted = max(counted, 1.0);
+    // An AGC that averages the picture, as cheap sets had: it turns a dark
+    // picture up and a bright one down, and pumps as the picture changes.
+    let gain = clamp(0.38 / max(level / counted, 0.08), 0.6, 1.8);
+    st.agc = st.agc + 0.15 * (gain - st.agc);
+    // The killer decides for the field, with some hysteresis, so color goes
+    // off and on cleanly instead of in streaks.
+    st.burst = st.burst + 0.5 * (strength / counted - st.burst);
+    let threshold = knob(13u) * BURST_LEVEL;
+    if (st.burst < threshold * 0.8) {
+        st.color = 0.0;
+    } else if (st.burst > threshold * 1.25) {
+        st.color = 1.0;
+    }
     st.next_t = t;
     st.period = period;
     st.trig = trig;

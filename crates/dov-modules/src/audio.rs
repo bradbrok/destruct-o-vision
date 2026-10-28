@@ -59,7 +59,7 @@ impl Behavior for AudioIn {
             return;
         };
         let channel = io.choice(CHANNEL);
-        *warning = device_warning(source, channel);
+        *warning = device_warning("Audio In", source, &[channel]);
 
         let rate = source.sample_rate() as f32;
         let settings = Settings::new(io, rate);
@@ -95,26 +95,68 @@ impl Behavior for AudioIn {
     }
 }
 
-fn device_warning(source: &AudioSource, channel: u32) -> Option<String> {
+/// Audio as it arrives, for modules that use the samples themselves (the
+/// XY display, RF's sound carrier): from the device named in the module's
+/// text, a field at a time.
+#[derive(Default)]
+pub(crate) struct AudioTap {
+    source: Option<Arc<AudioSource>>,
+    cursor: AudioCursor,
+    warning: Option<String>,
+}
+
+impl AudioTap {
+    /// Puts the audio that arrived since the last field into `out`, as
+    /// `channels` picked from each frame (see `pick`), interleaved. Returns
+    /// the device's sample rate.
+    pub(crate) fn read(&mut self, module: &str, io: &FieldIo, channels: &[u32], out: &mut Vec<f32>) -> u32 {
+        out.clear();
+        let device = io.params.text();
+        if self.source.as_ref().is_none_or(|s| s.device() != device) {
+            self.source = None;
+            self.source = Some(AudioSource::open(&device));
+            self.cursor = AudioCursor::default();
+        }
+        let Some(source) = &self.source else {
+            return 0;
+        };
+        self.warning = device_warning(module, source, channels);
+        let rate = source.sample_rate();
+        let max = (rate as f32 * MAX_READ_SECONDS) as usize;
+        source.read(&mut self.cursor, max, |frame| {
+            out.extend(channels.iter().map(|&c| pick(frame, c)));
+        });
+        rate
+    }
+
+    pub(crate) fn warning(&self) -> Option<String> {
+        self.warning.clone()
+    }
+}
+
+/// What's wrong, if anything, with `module`'s audio device and the
+/// `channels` it listens to.
+pub(crate) fn device_warning(module: &str, source: &AudioSource, channels: &[u32]) -> Option<String> {
     match source.status() {
         AudioStatus::Denied => Some(
             "Microphone access denied. Allow it in System Settings > Privacy & Security > Microphone.".into(),
         ),
-        AudioStatus::Failed(e) => Some(format!("Audio In: {e}")),
-        AudioStatus::Running { name } if channel as usize > source.channels() => {
+        AudioStatus::Failed(e) => Some(format!("{module}: {e}")),
+        AudioStatus::Running { name } => {
             let n = source.channels();
+            let channel = channels.iter().find(|&&c| c as usize > n)?;
             let plural = if n == 1 { "" } else { "s" };
             Some(format!(
-                "Audio In: {name} has {n} input channel{plural}, so channel {channel} is silent"
+                "{module}: {name} has {n} input channel{plural}, so channel {channel} is silent"
             ))
         }
-        AudioStatus::Running { .. } | AudioStatus::Starting => None,
+        AudioStatus::Starting => None,
     }
 }
 
 /// The selected channel of a frame: 0 mixes the first two, or takes a
 /// mono input as it is; `n` is channel `n`, counted from 1.
-fn pick(frame: &[f32], channel: u32) -> f32 {
+pub(crate) fn pick(frame: &[f32], channel: u32) -> f32 {
     match (channel, frame) {
         (0, [a, b, ..]) => 0.5 * (a + b),
         (0, [a]) => *a,

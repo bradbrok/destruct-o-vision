@@ -264,6 +264,9 @@ pub enum Kernel {
     Picture,
     /// A composite-domain stage implemented by the engine.
     Composite(CompositeOp),
+    /// An XY display: a beam drawn through the points the module's
+    /// behavior supplies each field, on a phosphor that holds what it drew.
+    Vector,
     /// CPU only, once per field. Outputs are control-rate.
     Control,
 }
@@ -277,6 +280,9 @@ pub enum CompositeOp {
     Inject,
     /// Transmission damage: snow, bandwidth, ghosts, hum, interference.
     Cable,
+    /// Broadcast on a channel and tuned in: signal strength, fine tuning,
+    /// multipath, other stations, and the sound carrier.
+    Rf,
     /// A videotape recorder's record and playback path.
     Vcr,
     /// Time base corrector: re-times lines to their sync.

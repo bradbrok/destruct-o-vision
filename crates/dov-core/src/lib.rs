@@ -13,4 +13,4 @@ pub use module::{
 pub use param::AtomicF32;
 pub use patch::{Cable, ModuleId, ModuleState, Patch, PortAddr};
 pub use phase::{PhaseAcc, RasterPhase, SyncReset};
-pub use raster::RasterStd;
+pub use raster::{Composite, RasterStd};

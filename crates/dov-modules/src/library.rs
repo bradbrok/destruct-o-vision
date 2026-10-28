@@ -57,6 +57,7 @@ static BUILTINS: &[Builtin] = &[
     Builtin::Rust(&LFO),
     Builtin::Rust(&MACROS),
     Builtin::Rust(&AUDIO_IN),
+    Builtin::Rust(&VECTOR),
     Builtin::Rust(&MIDI_NOTES),
     Builtin::Rust(&MIDI_CC),
     file!("output.wgsl"),
@@ -74,13 +75,17 @@ static BUILTINS: &[Builtin] = &[
     file!("posterize.wgsl"),
     file!("monitor.wgsl"),
     Builtin::Rust(&CAMERA),
+    file!("tubecam.wgsl"),
     Builtin::Rust(&MOVIE),
     Builtin::Rust(&ENCODER),
     Builtin::Rust(&INJECT),
     Builtin::Rust(&CABLE),
+    Builtin::Rust(&RF),
     Builtin::Rust(&VCR),
     Builtin::Rust(&TBC),
     Builtin::Rust(&TV),
+    file!("telecine.wgsl"),
+    file!("fields.wgsl"),
     file!("delay.wgsl"),
     file!("chromakey.wgsl"),
     Builtin::Rust(&DATAMOSH),
@@ -163,8 +168,11 @@ static FEEDBACK: ModuleType = ModuleType {
         name: "Feedback",
         category: Category::Space,
         description: "Frame store. Out is last field's In, zoomed, rotated and shifted: \
-                      patch it back around for video feedback. The CVs are video-rate, so a \
-                      picture patched into them warps the feedback pixel by pixel.",
+                      patch it back around for video feedback. Inside the loop, Hue turns the \
+                      color a little more each time round, for rainbow trails, Blur spreads it \
+                      like a defocused camera, and Key lets only what's brighter than it come \
+                      round again. The CVs are video-rate, so a picture patched into them warps \
+                      the feedback pixel by pixel.",
         inputs: &[PortDesc::new("sig", "In", RGB)],
         outputs: &[PortDesc::new("out", "Out", RGB)],
         params: &[
@@ -176,6 +184,11 @@ static FEEDBACK: ModuleType = ModuleType {
             ParamDesc::knob("y", "Y", -0.1, 0.1, 0.0).video_cv(),
             ParamDesc::knob("decay", "Gain", 0.0, 1.2, 0.95).video_cv(),
             ParamDesc::choice("mirror", "Mirror", &["Off", "H", "V", "Both"]),
+            ParamDesc::knob("hue", "Hue", -30.0, 30.0, 0.0)
+                .unit("°")
+                .video_cv(),
+            ParamDesc::knob("blur", "Blur", 0.0, 4.0, 0.0).video_cv(),
+            ParamDesc::knob("key", "Key", 0.0, 1.0, 0.0),
         ],
         screen: false,
         ring: None,
@@ -365,6 +378,49 @@ static MACROS: ModuleType = ModuleType {
         kernel: Kernel::Control,
     },
     behavior: Some(|| Box::new(Macros)),
+    origin: Origin::BuiltIn,
+};
+
+static VECTOR: ModuleType = ModuleType {
+    desc: ModuleDesc {
+        id: "dov.vector",
+        name: "Vector",
+        category: Category::Source,
+        description: "An XY display drawing audio with its beam: one channel sweeps it across, \
+                      another up and down, for Lissajous figures and oscilloscope music. Scope \
+                      draws Y against time instead, triggered as it rises through zero. The \
+                      phosphor holds the trace as long as Persist lets it, and glows hottest \
+                      where the beam lingers; a fast jump leaves only a faint line.",
+        inputs: &[],
+        outputs: &[PortDesc::new("out", "Out", RGB)],
+        params: &[
+            ParamDesc::choice("mode", "Mode", &crate::vector::MODES),
+            // Mixed, then each channel the device has.
+            ParamDesc::choice("x_channel", "X ch", &["1+2"])
+                .live(Live::AudioChannels)
+                .default_choice(1),
+            ParamDesc::choice("y_channel", "Y ch", &["1+2"])
+                .live(Live::AudioChannels)
+                .default_choice(2),
+            ParamDesc::knob("size", "Size", 0.1, 8.0, 1.0).exp().control_cv(),
+            ParamDesc::knob("x", "X", -1.0, 1.0, 0.0).control_cv(),
+            ParamDesc::knob("y", "Y", -1.0, 1.0, 0.0).control_cv(),
+            ParamDesc::knob("focus", "Focus", 0.0, 1.0, 0.4),
+            ParamDesc::knob("bright", "Bright", 0.0, 4.0, 1.0).control_cv(),
+            ParamDesc::knob("persist", "Persist", 0.0, 1.0, 0.4),
+            ParamDesc::choice("phosphor", "Phosphor", &["Green", "Blue", "Amber", "White"]),
+            ParamDesc::knob("time", "Time", 1.0, 200.0, 20.0).exp().unit("ms"),
+        ],
+        screen: true,
+        ring: None,
+        // The input device's name; empty for the system default.
+        text: Some(TextSpec {
+            default: "",
+            live: Some(Live::AudioInputs),
+        }),
+        kernel: Kernel::Vector,
+    },
+    behavior: Some(|| Box::new(crate::vector::Vector::default())),
     origin: Origin::BuiltIn,
 };
 
@@ -721,34 +777,94 @@ static CABLE: ModuleType = ModuleType {
     origin: Origin::BuiltIn,
 };
 
+static RF: ModuleType = ModuleType {
+    desc: ModuleDesc {
+        id: "dov.rf",
+        name: "RF",
+        category: Category::Analog,
+        description: "Broadcast on a channel and pulled in by a TV's tuner. Signal: turn it down \
+                      and snow comes up as the TV's gain rises to meet it, then the picture \
+                      loses its hold. Fine tunes one way to a soft picture that loses its color, \
+                      the other way to ringing edges and the sound beating with the chroma. \
+                      Ghost is a reflection off a building. Adjacent is the next channel up \
+                      bleeding in, its blanking bars crawling past (patch a picture into Other \
+                      for it to show); Co-chan is a distant station on the same channel. Sound \
+                      puts the audio from the input you pick on the sound carrier: it bends the \
+                      beat pattern and comes through as buzz bars.",
+        inputs: &[
+            PortDesc::new("sig", "In", COMPOSITE),
+            PortDesc::new("other", "Other", COMPOSITE),
+        ],
+        outputs: &[PortDesc::new("out", "Out", COMPOSITE)],
+        params: &[
+            ParamDesc::knob("signal", "Signal", 0.0, 1.0, 0.9).control_cv(),
+            ParamDesc::knob("fine", "Fine", -1.0, 1.0, 0.0).control_cv(),
+            ParamDesc::knob("ghost", "Ghost", 0.0, 1.0, 0.0).control_cv(),
+            ParamDesc::knob("adjacent", "Adjacent", 0.0, 1.0, 0.0).control_cv(),
+            ParamDesc::knob("cochannel", "Co-chan", 0.0, 1.0, 0.0).control_cv(),
+            ParamDesc::knob("sound", "Sound", 0.0, 1.0, 0.2).control_cv(),
+            // The audio on the sound carrier: mixed, then each channel.
+            ParamDesc::choice("channel", "Audio ch", &["1+2"]).live(Live::AudioChannels),
+        ],
+        screen: false,
+        ring: None,
+        // The audio input device's name; empty for the system default.
+        text: Some(TextSpec {
+            default: "",
+            live: Some(Live::AudioInputs),
+        }),
+        kernel: Kernel::Composite(CompositeOp::Rf),
+    },
+    behavior: Some(|| Box::new(crate::rf::Rf::default())),
+    origin: Origin::BuiltIn,
+};
+
 static VCR: ModuleType = ModuleType {
     desc: ModuleDesc {
         id: "dov.vcr",
         name: "VCR",
         category: Category::Analog,
-        description: "A VHS deck's record and playback path: luma bandwidth by tape speed, \
-                      color-under chroma, timebase wobble, flagging, head switching, dropouts \
-                      and mistracking. Chain several for generation loss.",
+        description: "A videotape deck's record and playback path: luma bandwidth by format and \
+                      tape speed, color-under chroma, timebase wobble, flagging, head switching, \
+                      dropouts and mistracking. It tapes what comes in: Pause holds a field with \
+                      the noise bar, Search spools through the tape with noise bars across the \
+                      picture, and Play carries on from wherever the tape is. Chain several for \
+                      generation loss.",
         inputs: &[PortDesc::new("sig", "In", COMPOSITE)],
-        outputs: &[PortDesc::new("out", "Out", COMPOSITE)],
+        outputs: &[
+            PortDesc::new("out", "Out", COMPOSITE),
+            PortDesc::new("tape", "Tape", COMPOSITE).hidden(),
+        ],
         params: &[
+            ParamDesc::choice("format", "Format", &crate::vcr::FORMATS),
             ParamDesc::choice("speed", "Speed", &["SP", "LP", "EP"]),
+            ParamDesc::choice("transport", "Deck", &crate::vcr::TRANSPORT).control_cv(),
+            ParamDesc::knob("search", "Search", 2.0, 15.0, 5.0)
+                .unit("×")
+                .control_cv(),
             ParamDesc::knob("tracking", "Tracking", 0.0, 1.0, 0.95).control_cv(),
             ParamDesc::knob("wow", "Wow", 0.0, 1.0, 0.2).control_cv(),
             ParamDesc::knob("jitter", "Jitter", 0.0, 1.0, 0.25).control_cv(),
             ParamDesc::knob("flagging", "Flagging", 0.0, 1.0, 0.3),
             ParamDesc::knob("head_switch", "Head sw", 0.0, 1.0, 0.7),
             ParamDesc::knob("dropouts", "Dropouts", 0.0, 1.0, 0.2).control_cv(),
+            ParamDesc::knob("clog", "Clog", 0.0, 1.0, 0.0).control_cv(),
+            ParamDesc::knob("crease", "Crease", 0.0, 1.0, 0.0).control_cv(),
             ParamDesc::knob("chroma_noise", "C noise", 0.0, 1.0, 0.3),
             ParamDesc::knob("luma_noise", "Y noise", 0.0, 1.0, 0.25),
             ParamDesc::knob("sharpness", "Sharp", 0.0, 1.0, 0.4),
         ],
         screen: false,
-        ring: None,
+        // The tape: what came in, field by field, while the deck ran.
+        ring: Some(RingSpec {
+            output: 1,
+            freeze_param: Some(crate::vcr::TRANSPORT_PARAM),
+            fields: 90,
+        }),
         text: None,
         kernel: Kernel::Composite(CompositeOp::Vcr),
     },
-    behavior: None,
+    behavior: Some(|| Box::new(crate::vcr::Deck::default())),
     origin: Origin::BuiltIn,
 };
 
@@ -782,7 +898,10 @@ static TV: ModuleType = ModuleType {
         category: Category::Analog,
         description: "A receiver that has to lock to what it's fed: sync separator, line \
                       oscillator with AFC, field oscillator with V hold, burst-locked color. \
-                      Unplugged, it shows snow.",
+                      Decoder picks how it parts color from detail: a notch filter, a comb, or \
+                      an adaptive comb that keeps vertical edges clean. AGC turns dark pictures \
+                      up and bright ones down, and pumps as the picture changes; Killer is how \
+                      weak a burst can get before color goes off. Unplugged, it shows snow.",
         inputs: &[PortDesc::new("sig", "In", COMPOSITE)],
         outputs: &[PortDesc::new("out", "Out", RGB)],
         params: &[
@@ -790,13 +909,16 @@ static TV: ModuleType = ModuleType {
             ParamDesc::knob("contrast", "Contrast", 0.0, 2.0, 1.0),
             ParamDesc::knob("saturation", "Color", 0.0, 2.0, 1.0),
             ParamDesc::knob("tint", "Tint", -0.5, 0.5, 0.0),
-            ParamDesc::choice("decoder", "Decoder", &["Notch", "Comb"]),
+            ParamDesc::choice("decoder", "Decoder", &["Notch", "Comb", "Adaptive"]),
             ParamDesc::knob("h_hold", "H hold", -1.0, 1.0, 0.0).control_cv(),
             ParamDesc::knob("afc", "AFC", 0.02, 1.0, 0.25).exp(),
             ParamDesc::knob("v_hold", "V hold", -1.0, 1.0, 0.0).control_cv(),
             ParamDesc::knob("slicer", "Slicer", -0.4, 0.2, -0.2),
             ParamDesc::knob("v_pos", "V pos", -10.0, 10.0, 0.0).unit("lines"),
             ParamDesc::knob("h_pos", "H pos", -60.0, 60.0, 0.0).unit("smp"),
+            ParamDesc::knob("sharpness", "Sharp", 0.0, 1.0, 0.0),
+            ParamDesc::knob("agc", "AGC", 0.0, 1.0, 0.0).control_cv(),
+            ParamDesc::knob("killer", "Killer", 0.0, 1.0, 0.25),
         ],
         screen: true,
         ring: None,

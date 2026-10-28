@@ -15,6 +15,9 @@ mod files;
 mod library;
 mod midi;
 mod movie;
+mod rf;
+mod vcr;
+mod vector;
 
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, RwLock};
@@ -40,6 +43,13 @@ pub trait Behavior: Send {
     /// movie's length and where its loop is.
     fn note(&self) -> Option<String> {
         None
+    }
+
+    /// What the module's kernel reads this field, if it reads anything: a
+    /// few values for each composite row (RF), or the points an XY display
+    /// draws through. The engine uploads it after `field`.
+    fn samples(&self) -> &[f32] {
+        &[]
     }
 
     /// For a [`Kernel::Picture`](dov_core::Kernel::Picture) module: the

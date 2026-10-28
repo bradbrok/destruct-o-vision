@@ -17,6 +17,9 @@ pub struct FieldIo<'a> {
     /// source is patched, otherwise the port default. Video-rate signals
     /// aren't visible here.
     pub inputs: &'a [f32],
+    /// Fields of history the engine keeps for the module (its `RingSpec`):
+    /// what it can look back over. 0 for none.
+    pub history: u32,
     pub extra: &'a mut [[f32; 4]; EXTRA_SLOTS],
     /// Control-rate outputs, indexed like `desc.outputs`.
     pub outputs: &'a mut [f32],
@@ -112,11 +115,12 @@ pub(crate) struct Encoder {
 impl Behavior for Encoder {
     fn field(&mut self, ctx: &FieldCtx, io: &mut FieldIo) {
         let r = ctx.raster;
-        if r.subcarrier_hz <= 0.0 {
+        let subcarrier_hz = r.composite().subcarrier_hz;
+        if subcarrier_hz <= 0.0 {
             io.extra[0] = [0.0; 4];
             return;
         }
-        let fsc = r.subcarrier_hz + f64::from(io.param(5));
+        let fsc = subcarrier_hz + f64::from(io.param(5));
         let frame = ctx.field / u64::from(r.fields_per_frame());
         let frame_period = f64::from(r.lines_per_frame) * r.line_period();
         if let Some(last) = self.frame {
@@ -329,6 +333,7 @@ mod tests {
                 slots: &values,
                 params: &params,
                 inputs: &inputs,
+                history: 0,
                 extra: &mut extra,
                 outputs: &mut outputs,
             };

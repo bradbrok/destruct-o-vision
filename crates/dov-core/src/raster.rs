@@ -30,7 +30,8 @@ pub struct RasterStd {
     pub first_active_line: u32,
     /// Display aspect ratio (width / height) of the active picture.
     pub display_aspect: f32,
-    /// Color subcarrier frequency for composite encoding; 0 for none (HD).
+    /// The standard's color subcarrier; 0 for rasters without one, which
+    /// carry composite video with NTSC's, scaled (see `composite`).
     pub subcarrier_hz: f64,
     /// PAL: the V chroma axis alternates every line.
     pub pal: bool,
@@ -256,6 +257,76 @@ impl RasterStd {
     pub fn first_active_line_offset(&self, field: u64) -> f64 {
         f64::from(self.first_active_line) + 0.5 * f64::from(self.field_parity(field))
     }
+
+    /// How composite video fits on this raster. NTSC and PAL carry their
+    /// own. Any other raster carries NTSC, scaled: sync and burst shrink to
+    /// fit its blanking, and the subcarrier and every bandwidth keep their
+    /// place relative to the picture's width, so a VCR smears a 1080×1920
+    /// picture as much as an NTSC one, and it comes back in color.
+    pub fn composite(&self) -> Composite {
+        if self.subcarrier_hz > 0.0 {
+            return Composite {
+                subcarrier_hz: self.subcarrier_hz,
+                sync_clock_hz: self.sample_rate_hz,
+                picture_clock_hz: self.sample_rate_hz,
+            };
+        }
+        let ntsc = Self::NTSC;
+        // The clocks that put NTSC's sync, from 0H to the picture, into this
+        // raster's, and NTSC's picture across this one's.
+        let seconds = |samples: u32| f64::from(samples) / ntsc.sample_rate_hz;
+        let sync_clock_hz = f64::from(self.active_start_sample) / seconds(ntsc.active_start_sample);
+        let picture_clock_hz = f64::from(self.active_samples) / seconds(ntsc.active_samples);
+        // As many cycles across the picture as NTSC, but no closer together
+        // in samples, and half a cycle over per line, so the subcarrier
+        // inverts from line to line as NTSC's does and a comb separates it.
+        let ntsc_per_sample = ntsc.subcarrier_hz / ntsc.sample_rate_hz;
+        let per_line =
+            (ntsc.subcarrier_hz / picture_clock_hz).min(ntsc_per_sample) * f64::from(self.samples_per_line);
+        let per_line = (per_line - 0.5).floor() + 0.5;
+        // Too narrow for a burst the decoder can lock to: black and white.
+        let burst_samples = BURST_SECONDS * sync_clock_hz;
+        let subcarrier_hz = if per_line >= 16.0 && burst_samples >= 8.0 {
+            per_line * self.line_rate_hz()
+        } else {
+            0.0
+        };
+        Composite {
+            subcarrier_hz,
+            sync_clock_hz,
+            picture_clock_hz,
+        }
+    }
+}
+
+/// The color burst's length, as the composite domain's shaders draw it
+/// (`BURST_US` in `common.wgsl`).
+const BURST_SECONDS: f64 = 2.5e-6;
+
+/// Composite video on a raster (see [`RasterStd::composite`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Composite {
+    /// The color subcarrier; 0 for black and white.
+    pub subcarrier_hz: f64,
+    /// Samples a second that the standard's timing of sync and burst, in
+    /// µs, is counted at.
+    pub sync_clock_hz: f64,
+    /// Samples a second that bandwidths in MHz, and times across the
+    /// picture (a ghost's delay), are counted at.
+    pub picture_clock_hz: f64,
+}
+
+impl Composite {
+    /// Subcarrier cycles per line of `raster` (227.5 for NTSC).
+    pub fn cycles_per_line(&self, raster: &RasterStd) -> f64 {
+        self.subcarrier_hz / raster.line_rate_hz()
+    }
+
+    /// Samples of this raster that one Rec. 601 sample of NTSC's picture
+    /// stretches across: how far to scale a shift counted in samples.
+    pub fn sample_scale(&self) -> f64 {
+        self.picture_clock_hz / RasterStd::NTSC.sample_rate_hz
+    }
 }
 
 #[cfg(test)]
@@ -352,6 +423,41 @@ mod tests {
         ] {
             assert_eq!(RasterStd::parse(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn composite_fits_every_raster() {
+        // NTSC and PAL carry their own.
+        assert_eq!(RasterStd::NTSC.composite().sample_scale(), 1.0);
+        assert_eq!(RasterStd::PAL.composite().subcarrier_hz, 4_433_618.75);
+        assert_eq!(RasterStd::PAL.composite().sync_clock_hz, 13_500_000.0);
+        // Other rasters carry NTSC scaled: about 191 cycles across the
+        // picture, half a cycle over per line, sync and burst before it.
+        for std in [
+            RasterStd::HD720P60,
+            RasterStd::HD1080P60,
+            RasterStd::progressive(1080, 1920, 30.0),
+            RasterStd::progressive(2160, 3840, 24.0),
+            RasterStd::progressive(4096, 4096, 60.0),
+        ] {
+            let c = std.composite();
+            let per_line = c.cycles_per_line(&std);
+            assert_eq!(per_line.fract(), 0.5, "{}", std.name());
+            let across = per_line * f64::from(std.active_samples) / f64::from(std.samples_per_line);
+            assert!((185.0..=195.0).contains(&across), "{}: {across}", std.name());
+            let burst_end = (5.3 + 2.5) * 1e-6 * c.sync_clock_hz;
+            assert!(burst_end < f64::from(std.active_start_sample), "{}", std.name());
+        }
+        // A narrow picture keeps at least 3.8 samples a cycle.
+        let narrow = RasterStd::progressive(360, 640, 30.0);
+        let c = narrow.composite();
+        assert!(c.subcarrier_hz > 0.0);
+        assert!(narrow.sample_rate_hz / c.subcarrier_hz >= 3.77);
+        // Too little blanking for a burst: black and white.
+        assert_eq!(
+            RasterStd::progressive(32, 32, 60.0).composite().subcarrier_hz,
+            0.0
+        );
     }
 
     #[test]

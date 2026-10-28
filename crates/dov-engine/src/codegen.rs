@@ -173,13 +173,24 @@ pub fn feedback_shader() -> String {
 /// Shader sources for the analog signal path, assembled by [`composite_shader`].
 pub mod composite {
     pub const COMMON: &str = include_str!("shaders/composite/common.wgsl");
-    pub const READ: &str = include_str!("shaders/composite/read.wgsl");
+    /// Reading a composite input, at binding 1.
+    pub const READ: &str = concat!(
+        include_str!("shaders/composite/read.wgsl"),
+        include_str!("shaders/composite/signal.wgsl")
+    );
+    /// The VCR's reading: its input, or its tape as it played back.
+    pub const TAPE: &str = concat!(
+        include_str!("shaders/composite/tape.wgsl"),
+        include_str!("shaders/composite/signal.wgsl")
+    );
     pub const ENCODE: &str = include_str!("shaders/composite/encode.wgsl");
     pub const INJECT: &str = include_str!("shaders/composite/inject.wgsl");
     pub const CABLE: &str = include_str!("shaders/composite/cable.wgsl");
+    pub const RF: &str = include_str!("shaders/composite/rf.wgsl");
     pub const VCR: &str = include_str!("shaders/composite/vcr.wgsl");
     pub const TBC: &str = include_str!("shaders/composite/tbc.wgsl");
     pub const TV_COMMON: &str = include_str!("shaders/composite/tv_common.wgsl");
+    pub const TV_STATE: &str = include_str!("shaders/composite/tv_state.wgsl");
     pub const TV_SYNC: &str = include_str!("shaders/composite/tv_sync.wgsl");
     pub const TV_SCAN: &str = include_str!("shaders/composite/tv_scan.wgsl");
     pub const TV_DECODE: &str = include_str!("shaders/composite/tv_decode.wgsl");
@@ -193,6 +204,18 @@ pub fn composite_shader(parts: &[&str]) -> String {
         s.push_str(part);
     }
     s
+}
+
+/// The passes of an XY display (`Kernel::Vector`).
+pub const VECTOR_BEAM: &str = include_str!("shaders/vector_beam.wgsl");
+pub const VECTOR_GLOW: &str = include_str!("shaders/vector_glow.wgsl");
+
+/// A pass of an XY display: the preludes followed by `part`.
+pub fn vector_shader(part: &str) -> String {
+    format!(
+        "{PRELUDE}{STD_LIB}{}{part}",
+        include_str!("shaders/vector_common.wgsl")
+    )
 }
 
 /// The pass behind [`Kernel::Camera`] and [`Kernel::Picture`]: a frame

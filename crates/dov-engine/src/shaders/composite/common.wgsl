@@ -20,6 +20,11 @@ struct Comp {
     sample_inc: f32,
     pal: bool,
     color: bool,
+    // Samples a second that the standard's sync and burst timings (µs) are
+    // counted at, and that bandwidths (MHz) and times across the picture
+    // are: the raster's own clock for NTSC and PAL; for other rasters,
+    // NTSC's timing scaled to fit (see `RasterStd::composite`).
+    sync_fs: f32,
     fs: f32,
 }
 
@@ -41,7 +46,8 @@ fn comp() -> Comp {
     c.sample_inc = sc.y;
     c.pal = sc.z > 0.5;
     c.color = sc.y > 0.0;
-    c.fs = u.info.sample_rate;
+    c.sync_fs = u.extra[4].y;
+    c.fs = u.extra[4].z;
     return c;
 }
 
@@ -56,8 +62,20 @@ const BURST_US: f32 = 2.5;
 // Half-lines of equalizing, broad (vertical sync) and equalizing pulses.
 const V_INTERVAL: i32 = 18;
 
+// Samples in `t` µs of the standard's sync and blanking.
 fn us(c: Comp, t: f32) -> f32 {
+    return t * 1e-6 * c.sync_fs;
+}
+
+// Samples in `t` µs across the picture.
+fn picture_us(c: Comp, t: f32) -> f32 {
     return t * 1e-6 * c.fs;
+}
+
+// Samples that `n` samples of NTSC's picture (at 13.5 MHz) stretch across,
+// for shifts and lengths counted in samples.
+fn samples(c: Comp, n: f32) -> f32 {
+    return n * c.fs / 13.5e6;
 }
 
 // NTSC sits black at 7.5 IRE above blanking; PAL and HD don't.
