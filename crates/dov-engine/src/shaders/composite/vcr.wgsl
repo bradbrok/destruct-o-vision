@@ -12,7 +12,8 @@
 //           extra[1] = (transport: 0 play, 1 pause, 2 search; servo
 //           relock, 1 as the transport changes and falling to 0; the tape's
 //           field number at the top of the picture; parity of the newest
-//           field on the tape); extra[2].x = lines the picture jumps.
+//           field on the tape); extra[2] = (lines the picture jumps, fields
+//           on the tape).
 
 @group(0) @binding(16) var cout: texture_storage_2d<r32float, write>;
 @group(0) @binding(17) var tape_out: texture_storage_2d<r32float, write>;
@@ -83,8 +84,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let speed = u32(round(knob(1u)));
     let luma_mhz = f.luma_mhz * select(select(1.0, 0.83, speed == 1u), 0.67, speed == 2u);
     let noise_scale = f.noise * select(select(1.0, 1.6, speed == 1u), 2.4, speed == 2u);
-    // Lines of this raster to one of NTSC's, for things measured in lines.
-    let ls = max(rows_f / 262.5, 1.0);
+    // Lines of this raster to one of NTSC's, for things measured in lines
+    // (the standards keep their own).
+    let ls = select(1.0, max(rows_f / 262.5, 1.0), c.scaled);
 
     // Transport. In Pause and Search the heads cross from track to track, and
     // between tracks the signal fades into noise: noise bars, with the
@@ -105,7 +107,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             bar = 1.0 - smoothstep(0.006 * bars, 0.024 * bars, abs(v - j));
         }
     }
-    let age_f = max(u.extra[0].x + band * u.extra[0].y, 0.0);
+    let age_f = clamp(u.extra[0].x + band * u.extra[0].y, 0.0, u.extra[2].y);
     play_age = i32(round(age_f));
     // The tape's field number under the heads: dropouts and creases are on
     // the tape, so a paused field keeps its own.
@@ -232,7 +234,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // the picture it replaces.
         let lost = max(max(clogged, noise_band * 0.9), crease_k * 0.6);
         if (lost > 0.0) {
-            sn = sn + lp_snow * (snow(s, urow, field, 13u) * 3.0 - sn);
+            sn = sn + lp_snow * (snow(s, urow, field, 13u) * 2.0 - sn);
             sn2 = sn2 + lp_snow * (sn - sn2);
             y_in = mix(y_in, sn2, lost);
         }

@@ -58,7 +58,7 @@ On a display at a whole multiple of the field rate (120 Hz for NTSC, 100 Hz for 
 
 The TV has to lock onto the signal, using a sync separator, a line oscillator with AFC and a field oscillator with V hold. Rolling, tearing, flagging and lost color come from the signal itself. For example, push an oscillator into the sync with Inject and the picture falls apart. Its decoder is a notch, a comb or an adaptive comb, and its AGC can pump with the picture.
 
-The VCR records what it plays into a tape memory. Pause holds a field with its noise bar, Search spools through the tape with noise bars across the picture, and Play carries on from wherever the tape is; each change makes the servo hunt for a moment. Formats from VHS to U-matic and Hi8 set its bandwidth, noise and dropouts, and Clog and Crease damage the tape. RF puts the signal on a channel: weaken it into snow, detune it until the color goes, bring in the station next door, and put live audio on the sound carrier for buzz bars.
+The VCR has a tape memory: the first time you stop or spool the deck, it starts taping what comes in. Pause holds a field with its noise bar, Search spools through the tape with noise bars across the picture, and Play carries on from wherever the tape is; each change makes the servo hunt for a moment. Formats from VHS to U-matic and Hi8 set its bandwidth, noise and dropouts, and Clog and Crease damage the tape. RF puts the signal on a channel: weaken it into snow, detune it until the color goes, bring in the station next door, and put live audio on the sound carrier for buzz bars.
 
 ![The showcase patch in the rack: 19 modules and 23 cables over three rows, with live pictures on the TV and Output panels](media/rack.jpg)
 

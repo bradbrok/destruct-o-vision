@@ -236,6 +236,7 @@ static DATAMOSH: ModuleType = ModuleType {
             output: 1,
             freeze_param: None,
             fields: 1,
+            lazy: false,
         }),
         text: None,
         kernel: Kernel::Staged {
@@ -826,10 +827,11 @@ static VCR: ModuleType = ModuleType {
         category: Category::Analog,
         description: "A videotape deck's record and playback path: luma bandwidth by format and \
                       tape speed, color-under chroma, timebase wobble, flagging, head switching, \
-                      dropouts and mistracking. It tapes what comes in: Pause holds a field with \
-                      the noise bar, Search spools through the tape with noise bars across the \
-                      picture, and Play carries on from wherever the tape is. Chain several for \
-                      generation loss.",
+                      dropouts and mistracking. Deck: the first time it's stopped or spooled, \
+                      the deck starts taping what comes in. Pause holds a field with the noise \
+                      bar, Search spools through the tape with noise bars across the picture, and \
+                      Play carries on from wherever the tape is. Chain several for generation \
+                      loss.",
         inputs: &[PortDesc::new("sig", "In", COMPOSITE)],
         outputs: &[
             PortDesc::new("out", "Out", COMPOSITE),
@@ -855,11 +857,13 @@ static VCR: ModuleType = ModuleType {
             ParamDesc::knob("sharpness", "Sharp", 0.0, 1.0, 0.4),
         ],
         screen: false,
-        // The tape: what came in, field by field, while the deck ran.
+        // The tape: what came in, field by field, while the deck ran. It's
+        // threaded the first time the deck stops or spools.
         ring: Some(RingSpec {
             output: 1,
             freeze_param: Some(crate::vcr::TRANSPORT_PARAM),
             fields: 90,
+            lazy: true,
         }),
         text: None,
         kernel: Kernel::Composite(CompositeOp::Vcr),

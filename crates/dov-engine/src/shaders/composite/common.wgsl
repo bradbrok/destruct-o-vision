@@ -26,6 +26,8 @@ struct Comp {
     // NTSC's timing scaled to fit (see `RasterStd::composite`).
     sync_fs: f32,
     fs: f32,
+    // NTSC scaled onto another raster, rather than a standard's own.
+    scaled: bool,
 }
 
 // Filled by the engine in u.extra[4..8].
@@ -48,6 +50,7 @@ fn comp() -> Comp {
     c.color = sc.y > 0.0;
     c.sync_fs = u.extra[4].y;
     c.fs = u.extra[4].z;
+    c.scaled = u.extra[4].w > 0.5;
     return c;
 }
 

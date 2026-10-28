@@ -95,6 +95,8 @@ struct Ring {
     depth: u32,
     /// Fields stored so far; the newest is in slot `(writes - 1) % depth`.
     writes: u64,
+    /// Store the next field even if frozen: a lazy ring's first.
+    store_next: bool,
 }
 
 impl Ring {
@@ -138,6 +140,7 @@ impl Ring {
             view,
             depth,
             writes: 0,
+            store_next: false,
         }
     }
 }
@@ -548,6 +551,8 @@ pub(crate) struct Runtime {
     black_composite: SignalTex,
     /// Stands in for a camera frame that hasn't arrived yet.
     no_frame: wgpu::TextureView,
+    /// Bound where a module's history isn't allocated (yet).
+    no_ring: wgpu::TextureView,
     /// Stands in for text that hasn't been rendered yet.
     no_text: wgpu::TextureView,
     fonts: Fonts,
@@ -570,6 +575,25 @@ impl Runtime {
             black: SignalTex::new(device, &raster, PortKind::Rgb, "black"),
             black_composite: SignalTex::new(device, &raster, PortKind::Composite, "no signal"),
             no_frame: camera_texture(device, 1, 1).1,
+            no_ring: device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("no history"),
+                    size: wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 2,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: COMPOSITE_FORMAT,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&wgpu::TextureViewDescriptor {
+                    dimension: Some(wgpu::TextureViewDimension::D2Array),
+                    ..Default::default()
+                }),
             no_text: constant_texture(device, wgpu::TextureFormat::R16Float, "no text"),
             fonts: Fonts::default(),
             sampler: device.create_sampler(&wgpu::SamplerDescriptor {
@@ -796,6 +820,7 @@ impl Runtime {
             }
             if let Some(spec) = desc.ring
                 && inst.ring.is_none()
+                && !spec.lazy
             {
                 let kind = desc.outputs[spec.output].kind;
                 inst.ring = Some(Ring::new(device, &raster, spec.fields, kind));
@@ -937,10 +962,9 @@ impl Runtime {
                         Some(tv) => wgpu::BindingResource::TextureView(&tv.decoded),
                         None => return Vec::new(),
                     },
-                    Slot::Ring => match &inst.ring {
-                        Some(r) => wgpu::BindingResource::TextureView(&r.view),
-                        None => return Vec::new(),
-                    },
+                    Slot::Ring => wgpu::BindingResource::TextureView(
+                        inst.ring.as_ref().map_or(&self.no_ring, |r| &r.view),
+                    ),
                     Slot::TextSdf => wgpu::BindingResource::TextureView(
                         inst.text.as_ref().map_or(&self.no_text, |t| &t.view),
                     ),
@@ -1000,7 +1024,10 @@ impl Runtime {
             slots: &slots,
             params: &inst.params,
             inputs: &values,
-            history: inst.ring.as_ref().map_or(0, |r| r.depth),
+            history: inst
+                .ring
+                .as_ref()
+                .map_or(0, |r| r.writes.min(u64::from(r.depth)) as u32),
             extra: &mut inst.extra,
             outputs: &mut inst.control_out,
         };
@@ -1075,6 +1102,34 @@ impl Runtime {
             | Kernel::Control => {}
         }
         u
+    }
+
+    /// Is module `i`'s history frozen this field (its `RingSpec` freeze
+    /// param on)?
+    fn frozen(&self, i: usize) -> bool {
+        let inst = &self.instances[i];
+        let Some(spec) = inst.ty.desc.ring else {
+            return false;
+        };
+        spec.freeze_param.is_some_and(|p| {
+            param_value(&inst.ty.desc, &inst.params.snapshot(), &self.input_values(i), p) >= 0.5
+        })
+    }
+
+    /// Allocates a lazy history the first time it freezes (see `RingSpec::lazy`).
+    fn thread_tape(&mut self, device: &wgpu::Device, i: usize) {
+        let inst = &self.instances[i];
+        let Some(spec) = inst.ty.desc.ring else {
+            return;
+        };
+        if !spec.lazy || inst.ring.is_some() || !self.frozen(i) {
+            return;
+        }
+        let kind = inst.ty.desc.outputs[spec.output].kind;
+        let mut ring = Ring::new(device, &self.raster, spec.fields, kind);
+        ring.store_next = true;
+        self.instances[i].ring = Some(ring);
+        self.instances[i].bind_groups = self.bind_groups(device, i);
     }
 
     /// Uploads what a module's behavior hands its kernel this field.
@@ -1392,6 +1447,7 @@ impl Runtime {
             self.run_behavior(i, &ctx);
         }
         for i in self.schedule.gpu.clone() {
+            self.thread_tape(device, i);
             self.run_behavior(i, &ctx);
             match self.instances[i].ty.desc.kernel {
                 Kernel::Camera => self.update_camera(device, queue, i),
@@ -1477,13 +1533,10 @@ impl Runtime {
             let (Some(spec), Some(ring)) = (inst.ty.desc.ring, &inst.ring) else {
                 continue;
             };
-            let frozen = spec.freeze_param.is_some_and(|p| {
-                param_value(&inst.ty.desc, &inst.params.snapshot(), &self.input_values(i), p) >= 0.5
-            });
             let Some(src) = inst.outputs.get(spec.output).and_then(Option::as_ref) else {
                 continue;
             };
-            if frozen {
+            if self.frozen(i) && !ring.store_next {
                 continue;
             }
             let layer = (ring.writes % u64::from(ring.depth)) as u32;
@@ -1499,6 +1552,7 @@ impl Runtime {
             );
             if let Some(ring) = self.instances[i].ring.as_mut() {
                 ring.writes += 1;
+                ring.store_next = false;
             }
         }
 
@@ -1600,7 +1654,8 @@ pub(crate) fn composite_timing(raster: &RasterStd, field: u64) -> [[f32; 4]; 4] 
             f32::from(u8::from(raster.interlaced)),
             composite.sync_clock_hz as f32,
             composite.picture_clock_hz as f32,
-            0.0,
+            // NTSC scaled onto another raster, rather than a standard's own.
+            f32::from(u8::from(raster.subcarrier_hz <= 0.0)),
         ],
         [
             line_fract as f32,

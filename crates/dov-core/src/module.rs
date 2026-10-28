@@ -374,6 +374,10 @@ pub struct RingSpec {
     pub freeze_param: Option<usize>,
     /// Fields of history wanted; the engine may keep fewer.
     pub fields: u32,
+    /// Kept only once the freeze param first turns on, not from the start
+    /// (a VCR's tape), so a module that never freezes costs no memory. The
+    /// field it turns on in is stored anyway, so there's something to hold.
+    pub lazy: bool,
 }
 
 /// An input port, either declared or generated for a parameter's CV.

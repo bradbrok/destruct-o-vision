@@ -124,6 +124,7 @@ fn desc(m: f::Module) -> ModuleDesc {
             output: h.output,
             freeze_param: h.freeze,
             fields: h.fields,
+            lazy: false,
         }),
         text: m.text_default.map(|t| TextSpec {
             default: leak(t),

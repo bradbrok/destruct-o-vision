@@ -60,7 +60,7 @@ default = 0.2
 
 [history]
 output = "shot"
-fields = 8
+fields = 12
 */
 
 fn film_rate(choice: u32) -> f32 {
@@ -123,9 +123,14 @@ fn process(ctx: Ctx, inp: Inputs, p: Params) -> Outputs {
     }
     let ratio = fps / rate;
     let f = f32(ctx.field % 60000u);
-    let frame_f = floor(f * ratio + 1e-3);
-    let start = ceil(frame_f / ratio - 1e-3);
-    let age = i32(f - start);
+    var frame_f = floor(f * ratio + 1e-3);
+    var start = ceil(frame_f / ratio - 1e-3);
+    // f32 can land a frame's start a field late; then it's the frame before.
+    if (start > f) {
+        frame_f = frame_f - 1.0;
+        start = ceil(frame_f / ratio - 1e-3);
+    }
+    let age = max(i32(f - start), 0);
     let frame = u32(frame_f) + (ctx.field / 60000u) * 60000u;
     let parity = i32((ctx.field - u32(age)) % u32(ctx.stride));
 

@@ -30,8 +30,6 @@ fn pause_bar(tracking: f32) -> f32 {
 pub(crate) struct Deck {
     /// Fields back on the tape that the heads are playing.
     age: f64,
-    /// Fields taped so far, up to what the ring holds.
-    taped: u64,
     /// The newest field taped.
     newest: Option<u64>,
     transport: Option<u32>,
@@ -46,9 +44,9 @@ impl Behavior for Deck {
     fn field(&mut self, ctx: &FieldCtx, io: &mut FieldIo) {
         let transport = io.choice(TRANSPORT_PARAM);
         let fields = ctx.advanced.max(1) as f64;
-        let depth = f64::from(io.history);
-        // What can be played: as much as the tape holds and has had taped.
-        let longest = depth.min(self.taped as f64);
+        // What can be played: what's on the tape (none until the deck first
+        // stops, when the engine threads it).
+        let longest = f64::from(io.history);
         let speed = f64::from(io.param(SEARCH).clamp(1.0, 30.0));
         let tracking = io.param(TRACKING).clamp(0.0, 1.0);
 
@@ -124,12 +122,12 @@ impl Behavior for Deck {
             (tape_field % (1 << 20)) as f32,
             newest_parity as f32,
         ];
-        io.extra[2] = [jump.round() as f32, 0.0, 0.0, 0.0];
+        io.extra[2] = [jump.round() as f32, longest as f32, 0.0, 0.0];
 
-        // The engine tapes this field after it's played, unless stopped.
-        if transport == PLAY && io.history > 0 {
+        // The engine tapes this field after it's played, unless stopped, or
+        // the tape is threaded this field.
+        if transport == PLAY || io.history == 0 {
             self.newest = Some(ctx.field);
-            self.taped = (self.taped + 1).min(u64::from(io.history));
         }
     }
 }
